@@ -1,0 +1,67 @@
+name: Task
+description: VoxelKit development task
+title: "[layer] Short imperative title"
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > Fill every section. Empty acceptance criteria = issue will not be merged.
+
+  - type: textarea
+    id: overview
+    attributes:
+      label: Overview
+      description: What this task accomplishes and why it matters for VoxelKit.
+      placeholder: |
+        Brief description of the feature or fix.
+        Include Apple framework(s) involved and the architectural role.
+    validations:
+      required: true
+
+  - type: textarea
+    id: subtasks
+    attributes:
+      label: Subtasks
+      description: Ordered checklist. Each item should be independently verifiable.
+      placeholder: |
+        - [ ] Define public protocol / struct
+        - [ ] Implement core logic
+        - [ ] Write Swift Testing unit tests
+        - [ ] Add DocC documentation comments
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Issues that must be completed before this one can start. Use "Blocked by #N".
+      placeholder: |
+        Blocked by #1 (SPM structure must exist before adding targets)
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Concrete, testable conditions for "done". Each criterion must be verifiable.
+      placeholder: |
+        - [ ] `swift build` passes with zero warnings on macOS 26
+        - [ ] All new Swift Testing tests pass
+        - [ ] Public API is fully documented with DocC comments
+        - [ ] Benchmarks show < X ms for typical operation
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Implementation Notes
+      description: Key decisions, relevant Apple docs links, known pitfalls, M1 optimisation hints.
+      placeholder: |
+        - Use `MTLStorageMode.shared` for zero-copy CPU↔GPU transfers
+        - Reference: developer.apple.com/documentation/...
+    validations:
+      required: false
