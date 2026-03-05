@@ -11,6 +11,7 @@ struct VoxelCLI: AsyncParsableCommand {
         subcommands: [
             ProcessCommand.self,
             InfoCommand.self,
+            ViewCommand.self,
         ]
     )
 }

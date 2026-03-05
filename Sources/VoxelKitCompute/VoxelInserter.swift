@@ -198,11 +198,36 @@ public final class VoxelInserter: @unchecked Sendable {
         }
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-        if let addr = CVPixelBufferGetBaseAddress(buffer) {
+        guard let addr = CVPixelBufferGetBaseAddress(buffer) else { return texture }
+
+        let fmt = CVPixelBufferGetPixelFormatType(buffer)
+        if fmt == kCVPixelFormatType_DepthFloat32 || fmt == kCVPixelFormatType_DisparityFloat32 {
+            // Native Float32 — copy directly
             texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
                             withBytes: addr, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer))
+        } else {
+            // Float16 — convert to Float32
+            let count = width * height
+            let src = addr.bindMemory(to: UInt16.self, capacity: count)
+            var f32 = [Float32](repeating: 0, count: count)
+            for i in 0..<count {
+                f32[i] = half16toFloat32(src[i])
+            }
+            texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+                            withBytes: f32, bytesPerRow: width * 4)
         }
         return texture
+    }
+
+    private func half16toFloat32(_ h: UInt16) -> Float32 {
+        let sign     = UInt32(h & 0x8000) << 16
+        let exp      = UInt32(h & 0x7C00)
+        let mantissa = UInt32(h & 0x03FF)
+        let bits: UInt32
+        if exp == 0           { bits = sign }
+        else if exp == 0x7C00 { bits = sign | 0x7F800000 | (mantissa << 13) }
+        else                  { bits = sign | ((exp + 0x1C000) << 13) | (mantissa << 13) }
+        return Float32(bitPattern: bits)
     }
 }
 

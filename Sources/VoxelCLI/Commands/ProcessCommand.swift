@@ -1,8 +1,6 @@
 import Foundation
 import ArgumentParser
 import VoxelKit
-import VoxelKitCompute
-import Metal
 import AppKit
 import SwiftUI
 
@@ -45,8 +43,6 @@ struct ProcessCommand: AsyncParsableCommand {
         let outputURL: URL = output.map { URL(fileURLWithPath: $0).standardizedFileURL }
             ?? inputURL.deletingPathExtension().appendingPathExtension("botmap")
 
-        guard let device = MTLCreateSystemDefaultDevice() else { throw CLIError.noMetalDevice }
-
         let availCores = ProcessInfo.processInfo.activeProcessorCount
         let cores = max(1, min(maxCores ?? max(1, availCores / 2), availCores))
         let step  = max(8, 64 / cores)
@@ -54,29 +50,27 @@ struct ProcessCommand: AsyncParsableCommand {
         let world         = BotMapWorld(name: inputURL.deletingPathExtension().lastPathComponent)
         let capture       = VideoCaptureSession(url: inputURL, rate: .fast)
         let poseEstimator = OpticalFlowPoseEstimator()
-        let inserter      = try VoxelInserter(device: device)
-        inserter.maxDepth    = maxDepth
-        inserter.samplingStep = step
 
         let state = ProcessingState()
         state.inputName  = inputURL.lastPathComponent
         state.outputPath = outputURL.path
-        state.gpuName    = device.name
         let memLimit = minFreeRamGb
 
         print("VoxelKit — \(inputURL.lastPathComponent)")
-        print("GPU: \(device.name) | cores: \(cores)/\(availCores) | pixel step: \(step)")
+        print("Cores: \(cores)/\(availCores) | flow step: \(max(1, step / 4))")
 
         await capture.setOnFrame { pixelBuffer, _, _, _ in
             if SystemMonitor.freeMemoryGB() < memLimit {
                 try? await Task.sleep(nanoseconds: 300_000_000)
             }
-            do {
-                let pose = await poseEstimator.process(pixelBuffer: pixelBuffer)
-                try await inserter.processFrame(
-                    pixelBuffer: pixelBuffer, pose: pose,
-                    intrinsics: .iPhone14Default, world: world)
-            } catch { }
+            // Use inverse-flow depth for per-pixel 3D reconstruction
+            let (_, positions) = await poseEstimator.processWithDepth(
+                pixelBuffer: pixelBuffer,
+                intrinsics: .iPhone14Default,
+                samplingStep: max(1, step / 4))
+            if !positions.isEmpty {
+                await world.insertVoxelBatch(positions)
+            }
         }
 
         if noGui {

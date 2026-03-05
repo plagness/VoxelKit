@@ -27,9 +27,7 @@ struct MonitorView: View {
         HStack(spacing: 0) {
             // Left: map preview
             ZStack {
-                Color.black
-                VoxelPreviewView(positions: previewPositions)
-                    .padding(8)
+                VoxelScene3DView(positions: previewPositions)
 
                 if isFinished {
                     VStack {
