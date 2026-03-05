@@ -34,6 +34,7 @@ let package = Package(
             dependencies: [
                 "VoxelKit",
                 "VoxelKitCompute",
+                "VoxelKitUI",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/VoxelCLI"
