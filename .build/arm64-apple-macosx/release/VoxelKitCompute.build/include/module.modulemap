@@ -1,3 +1,0 @@
-module VoxelKitCompute {
-    header "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelKitCompute.build/include/VoxelKitCompute-Swift.h"
-}
