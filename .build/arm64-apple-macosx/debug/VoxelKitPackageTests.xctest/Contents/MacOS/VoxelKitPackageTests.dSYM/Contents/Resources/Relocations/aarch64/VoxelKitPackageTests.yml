@@ -1,0 +1,5 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     '/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitPackageTests.xctest/Contents/MacOS/VoxelKitPackageTests'
+relocations:     []
+...

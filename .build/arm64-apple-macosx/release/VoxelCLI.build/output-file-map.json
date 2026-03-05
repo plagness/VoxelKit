@@ -1,0 +1,61 @@
+{
+  "": {
+    "dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/VoxelCLI.d",
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/VoxelCLI.o",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/master.swiftdeps"
+  },
+  "/Users/plag/robodog/VoxelKit/Sources/VoxelCLI/Commands/InfoCommand.swift": {
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/InfoCommand.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/InfoCommand~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/InfoCommand.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/InfoCommand.dia"
+  },
+  "/Users/plag/robodog/VoxelKit/Sources/VoxelCLI/Commands/ProcessCommand.swift": {
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/ProcessCommand.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/ProcessCommand~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/ProcessCommand.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/ProcessCommand.dia"
+  },
+  "/Users/plag/robodog/VoxelKit/Sources/VoxelCLI/Monitor/MonitorAppDelegate.swift": {
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/MonitorAppDelegate.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/MonitorAppDelegate~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/MonitorAppDelegate.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/MonitorAppDelegate.dia"
+  },
+  "/Users/plag/robodog/VoxelKit/Sources/VoxelCLI/Monitor/MonitorView.swift": {
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/MonitorView.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/MonitorView~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/MonitorView.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/MonitorView.dia"
+  },
+  "/Users/plag/robodog/VoxelKit/Sources/VoxelCLI/Monitor/ProcessingState.swift": {
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/ProcessingState.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/ProcessingState~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/ProcessingState.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/ProcessingState.dia"
+  },
+  "/Users/plag/robodog/VoxelKit/Sources/VoxelCLI/Monitor/SystemMonitor.swift": {
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/SystemMonitor.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/SystemMonitor~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/SystemMonitor.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/SystemMonitor.dia"
+  },
+  "/Users/plag/robodog/VoxelKit/Sources/VoxelCLI/Monitor/VoxelPreviewView.swift": {
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/VoxelPreviewView.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/VoxelPreviewView~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/VoxelPreviewView.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/VoxelPreviewView.dia"
+  },
+  "/Users/plag/robodog/VoxelKit/Sources/VoxelCLI/TerminalProgress.swift": {
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/TerminalProgress.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/TerminalProgress~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/TerminalProgress.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/TerminalProgress.dia"
+  },
+  "/Users/plag/robodog/VoxelKit/Sources/VoxelCLI/VoxelCLI.swift": {
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/VoxelCLI.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/VoxelCLI~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/VoxelCLI.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelCLI.build/VoxelCLI.dia"
+  }
+}

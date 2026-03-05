@@ -1,0 +1,3 @@
+module VoxelKitUI {
+    header "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelKitUI.build/include/VoxelKitUI-Swift.h"
+}

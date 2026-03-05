@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelKitUI.build/VoxelKitUI.d",
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelKitUI.build/VoxelKitUI.o",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelKitUI.build/master.swiftdeps"
+  },
+  "/Users/plag/robodog/VoxelKit/Sources/VoxelKitUI/VoxelKitUI.swift": {
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelKitUI.build/VoxelKitUI.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelKitUI.build/VoxelKitUI~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelKitUI.build/VoxelKitUI.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/release/VoxelKitUI.build/VoxelKitUI.dia"
+  }
+}

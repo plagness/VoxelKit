@@ -1,0 +1,19 @@
+{
+  "": {
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitTests.build/master.swiftdeps"
+  },
+  "/Users/plag/robodog/VoxelKit/Tests/VoxelKitTests/IntegrationTests.swift": {
+    "dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitTests.build/IntegrationTests.d",
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitTests.build/IntegrationTests.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitTests.build/IntegrationTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitTests.build/IntegrationTests.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitTests.build/IntegrationTests.dia"
+  },
+  "/Users/plag/robodog/VoxelKit/Tests/VoxelKitTests/MappingTests.swift": {
+    "dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitTests.build/MappingTests.d",
+    "object": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitTests.build/MappingTests.swift.o",
+    "swiftmodule": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitTests.build/MappingTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitTests.build/MappingTests.swiftdeps",
+    "diagnostics": "/Users/plag/robodog/VoxelKit/.build/arm64-apple-macosx/debug/VoxelKitTests.build/MappingTests.dia"
+  }
+}
