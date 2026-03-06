@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreVideo
+import CoreMedia
 
 /// Processes a `.mov` / `.mp4` file through the mapping pipeline.
 ///
@@ -8,11 +9,11 @@ import CoreVideo
 /// ```
 /// AVAssetReader (VideoToolbox HW decode)
 ///   → CVPixelBuffer (420YpCbCr8BiPlanarVideoRange)
-///   → VideoFrameCallback (passed to VoxelInserter in VoxelKitCompute)
+///   → VideoFrameCallback with CameraIntrinsics extracted from sample metadata
 /// ```
 ///
 /// This actor manages reading and sequencing frames. The actual depth estimation
-/// and voxel insertion is handled by `VoxelInsertionPipeline` (VoxelKitCompute).
+/// and voxel insertion is handled by `OpticalFlowPoseEstimator`.
 public actor VideoCaptureSession: CaptureSession {
 
     // MARK: - Configuration
@@ -31,17 +32,19 @@ public actor VideoCaptureSession: CaptureSession {
     private let url: URL
     private let rate: PlaybackRate
     private var cancelled = false
-    private var _progress: AsyncStream<CaptureProgress>.Continuation?
 
     public let progress: AsyncStream<CaptureProgress>
     private var progressContinuation: AsyncStream<CaptureProgress>.Continuation
 
     /// Callback invoked for each decoded frame. Set before calling `start()`.
-    /// Receives: CVPixelBuffer (YUV 4:2:0), frame index, total frame count, frame timestamp.
-    public var onFrame: (@Sendable (CVPixelBuffer, Int, Int, CMTime) async -> Void)?
+    /// Receives: CVPixelBuffer (YUV 4:2:0), CameraIntrinsics (from metadata or fallback),
+    ///           frame index, total frame count, frame timestamp.
+    public var onFrame: (@Sendable (CVPixelBuffer, CameraIntrinsics, Int, Int, CMTime) async -> Void)?
 
     /// Actor-isolated setter for `onFrame` (call with `await` from outside the actor).
-    public func setOnFrame(_ callback: @Sendable @escaping (CVPixelBuffer, Int, Int, CMTime) async -> Void) {
+    public func setOnFrame(
+        _ callback: @Sendable @escaping (CVPixelBuffer, CameraIntrinsics, Int, Int, CMTime) async -> Void
+    ) {
         self.onFrame = callback
     }
 
@@ -94,9 +97,22 @@ public actor VideoCaptureSession: CaptureSession {
         var lastFPSTime = Date.now
         var fpsFrameCount = 0
 
+        // Intrinsics: extracted once from first frame that carries camera calibration metadata
+        var currentIntrinsics: CameraIntrinsics = .iPhone14Default
+        var intrinsicsDetected = false
+
         while !cancelled {
             guard let sampleBuffer = trackOutput.copyNextSampleBuffer() else { break }
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { continue }
+
+            // Extract camera intrinsics from CMSampleBuffer metadata (once per session)
+            if !intrinsicsDetected {
+                let candidate = CameraIntrinsics.from(sampleBuffer: sampleBuffer)
+                if candidate.fx != CameraIntrinsics.iPhone14Default.fx {
+                    currentIntrinsics = candidate
+                    intrinsicsDetected = true
+                }
+            }
 
             let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             processedFrames += 1
@@ -104,7 +120,7 @@ public actor VideoCaptureSession: CaptureSession {
 
             // Invoke frame callback
             if let cb = onFrame {
-                await cb(pixelBuffer, processedFrames, totalFrames, presentationTime)
+                await cb(pixelBuffer, currentIntrinsics, processedFrames, totalFrames, presentationTime)
             }
 
             // Real-time throttle
@@ -127,7 +143,7 @@ public actor VideoCaptureSession: CaptureSession {
                 let prog = CaptureProgress(
                     processedFrames: processedFrames,
                     totalFrames: totalFrames,
-                    insertedVoxelCount: 0,  // updated by VoxelInsertionPipeline
+                    insertedVoxelCount: 0,
                     fps: fps,
                     currentPose: .identity
                 )

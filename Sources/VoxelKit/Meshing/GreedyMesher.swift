@@ -69,6 +69,26 @@ public enum GreedyMesher {
             grid[iz * gridN2 + iy * gridN + ix] = cf
         }
 
+        // Remove fully interior voxels (all 6 neighbors occupied) to eliminate hidden faces
+        for iz in 0..<gridN {
+            let zBase = iz * gridN2
+            for iy in 0..<gridN {
+                let yzBase = zBase + iy * gridN
+                for ix in 0..<gridN {
+                    let idx = yzBase + ix
+                    guard grid[idx] != 0 else { continue }
+                    let allNeighbors =
+                        (ix > 0 && grid[idx - 1] != 0) &&
+                        (ix < gridN - 1 && grid[idx + 1] != 0) &&
+                        (iy > 0 && grid[idx - gridN] != 0) &&
+                        (iy < gridN - 1 && grid[idx + gridN] != 0) &&
+                        (iz > 0 && grid[idx - gridN2] != 0) &&
+                        (iz < gridN - 1 && grid[idx + gridN2] != 0)
+                    if allNeighbors { grid[idx] = 0 }
+                }
+            }
+        }
+
         var result = [MergedVoxel]()
         result.reserveCapacity(max(voxels.count / 8, 8))
 

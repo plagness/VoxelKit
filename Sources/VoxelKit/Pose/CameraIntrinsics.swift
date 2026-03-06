@@ -38,6 +38,12 @@ public struct CameraIntrinsics: Sendable {
         fx: 2073, fy: 2073, cx: 1512, cy: 1008, width: 3024, height: 2016
     )
 
+    /// iPhone 13 rear camera (1× lens, 1080p video).
+    /// Approximate — overridden by actual CMSampleBuffer metadata when available.
+    public static let iPhone13Default = CameraIntrinsics(
+        fx: 1552, fy: 1552, cx: 960, cy: 540, width: 1920, height: 1080
+    )
+
     // MARK: - Back-projection
 
     /// Convert a pixel (u, v) and depth `d` (metres) to camera-space 3D position.
@@ -62,18 +68,29 @@ public struct CameraIntrinsics: Sendable {
 // MARK: - AVFoundation extraction
 
 extension CameraIntrinsics {
-    /// Extract intrinsics from an AVAssetTrack's formatDescription metadata.
+    /// Extract intrinsics from a CMSampleBuffer's camera intrinsic matrix attachment.
     /// Falls back to `iPhone14Default` if calibration data is unavailable.
     public static func from(track: AVAssetTrack,
                              sampleBuffer: CMSampleBuffer? = nil) -> CameraIntrinsics {
-        // Try CMSampleBuffer camera intrinsic matrix (iOS 11+ / macOS 10.13+)
-        if let sb = sampleBuffer,
-           let rawMatrix = CMGetAttachment(sb,
+        if let sb = sampleBuffer {
+            return from(sampleBuffer: sb)
+        }
+        return .iPhone14Default
+    }
+
+    /// Extract intrinsics from a CMSampleBuffer.
+    /// Falls back to `iPhone14Default` if calibration data is unavailable.
+    public static func from(sampleBuffer: CMSampleBuffer) -> CameraIntrinsics {
+        // Try camera intrinsic matrix (iOS 11+ / macOS 10.13+)
+        if let rawMatrix = CMGetAttachment(sampleBuffer,
                key: kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix,
-               attachmentModeOut: nil) {
-            if let matrix = rawMatrix as? Data {
-                return CameraIntrinsics.from(intrinsicMatrixData: matrix,
-                                             width: 1920, height: 1080)
+               attachmentModeOut: nil),
+           let matrix = rawMatrix as? Data {
+            // Actual video pixel dimensions from the sample buffer
+            if let imgBuf = CMSampleBufferGetImageBuffer(sampleBuffer) {
+                let w = CVPixelBufferGetWidth(imgBuf)
+                let h = CVPixelBufferGetHeight(imgBuf)
+                return from(intrinsicMatrixData: matrix, width: w, height: h)
             }
         }
         return .iPhone14Default

@@ -48,8 +48,10 @@ struct ProcessCommand: AsyncParsableCommand {
         let step  = max(8, 64 / cores)
 
         let world         = BotMapWorld(name: inputURL.deletingPathExtension().lastPathComponent)
-        let capture       = VideoCaptureSession(url: inputURL, rate: .fast)
+        let rate: VideoCaptureSession.PlaybackRate = fast ? .custom(1.0) : .custom(0.33)
+        let capture       = VideoCaptureSession(url: inputURL, rate: rate)
         let poseEstimator = OpticalFlowPoseEstimator()
+        await poseEstimator.setFrameSkip(fast ? 1 : 2)
 
         let state = ProcessingState()
         state.inputName  = inputURL.lastPathComponent
@@ -59,14 +61,13 @@ struct ProcessCommand: AsyncParsableCommand {
         print("VoxelKit — \(inputURL.lastPathComponent)")
         print("Cores: \(cores)/\(availCores) | flow step: \(max(1, step / 4))")
 
-        await capture.setOnFrame { pixelBuffer, _, _, _ in
+        await capture.setOnFrame { pixelBuffer, intrinsics, _, _, _ in
             if SystemMonitor.freeMemoryGB() < memLimit {
                 try? await Task.sleep(nanoseconds: 300_000_000)
             }
-            // Use inverse-flow depth for per-pixel 3D reconstruction
             let (_, positions) = await poseEstimator.processWithDepth(
                 pixelBuffer: pixelBuffer,
-                intrinsics: .iPhone14Default,
+                intrinsics: intrinsics,
                 samplingStep: max(1, step / 4))
             if !positions.isEmpty {
                 await world.insertVoxelBatch(positions)

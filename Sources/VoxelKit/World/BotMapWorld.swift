@@ -52,6 +52,11 @@ public actor BotMapWorld {
         store.insertPositions(positions, robotIndex: robotIndex)
     }
 
+    /// Insert a batch of colored voxels (from camera-sampled depth back-projection).
+    public func insertColoredVoxelBatch(_ voxels: [ColoredPosition], robotIndex: Int = 0) {
+        store.insertColoredPositions(voxels, robotIndex: robotIndex)
+    }
+
     /// Insert a decoded LiDAR frame (for LiDAR-based capture sessions).
     public func insertLiDARFrame(_ frame: LiDARFrame, robotIndex: Int = 0) {
         store.insertFrame(frame, robotIndex: robotIndex)
@@ -79,6 +84,17 @@ public actor BotMapWorld {
     /// Return up to `maxCount` occupied positions sampled uniformly (for live preview).
     public func samplePositions(maxCount: Int = 4000) -> [SIMD3<Float>] {
         store.samplePositions(maxCount: maxCount)
+    }
+
+    /// Return up to `maxCount` colored voxels sampled uniformly (position + RGB).
+    public func sampleColoredPositions(maxCount: Int = 4000) -> [(SIMD3<Float>, (UInt8, UInt8, UInt8))] {
+        store.sampleColoredPositions(maxCount: maxCount)
+    }
+
+    /// Collect greedy-merged voxels for rendering (cuboids with center + halfSize + color).
+    public func collectMergedVoxels(cameraPos: SIMD3<Float> = .zero,
+                                     frustumPlanes: [SIMD4<Float>] = []) -> [MergedVoxel] {
+        store.collectMergedVoxels(cameraPos: cameraPos, frustumPlanes: frustumPlanes)
     }
 
     // MARK: - Persistence

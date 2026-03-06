@@ -14,6 +14,17 @@ public enum MapLayer: UInt8, Codable, CaseIterable, Sendable {
 
 public typealias VoxelPosition = SIMD3<Float>
 
+/// A voxel position with camera-sampled RGB color.
+public struct ColoredPosition: Sendable {
+    public let position: SIMD3<Float>
+    public let color: (UInt8, UInt8, UInt8)
+
+    public init(position: SIMD3<Float>, color: (UInt8, UInt8, UInt8)) {
+        self.position = position
+        self.color = color
+    }
+}
+
 // MARK: - Packed Voxel (GPU-ready, 16 bytes)
 
 /// Packed voxel for Metal buffer.

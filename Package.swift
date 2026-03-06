@@ -3,11 +3,12 @@ import PackageDescription
 
 let package = Package(
     name: "VoxelKit",
-    platforms: [.macOS(.v15)],
+    platforms: [.iOS(.v17), .macOS(.v15)],
     products: [
         .library(name: "VoxelKit", targets: ["VoxelKit"]),
         .library(name: "VoxelKitCompute", targets: ["VoxelKitCompute"]),
         .library(name: "VoxelKitUI", targets: ["VoxelKitUI"]),
+        .library(name: "VoxelStream", targets: ["VoxelStream"]),
         .executable(name: "voxelcli", targets: ["VoxelCLI"]),
     ],
     dependencies: [
@@ -15,7 +16,12 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "VoxelStream",
+            path: "Sources/VoxelStream"
+        ),
+        .target(
             name: "VoxelKit",
+            dependencies: ["VoxelStream"],
             path: "Sources/VoxelKit"
         ),
         .target(
@@ -43,6 +49,11 @@ let package = Package(
             name: "VoxelKitTests",
             dependencies: ["VoxelKit", "VoxelKitCompute"],
             path: "Tests/VoxelKitTests"
+        ),
+        .testTarget(
+            name: "VoxelStreamTests",
+            dependencies: ["VoxelStream"],
+            path: "Tests/VoxelStreamTests"
         ),
     ]
 )

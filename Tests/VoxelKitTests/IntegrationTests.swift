@@ -28,7 +28,7 @@ struct IntegrationTests {
         let inserter = try VoxelInserter(device: device)
         inserter.samplingStep = 16  // 1/256 pixels for speed in tests
 
-        await capture.setOnFrame { pixelBuffer, frameIdx, _, _ in
+        await capture.setOnFrame { pixelBuffer, _, frameIdx, _, _ in
             guard frameIdx <= 100 else { return }
             let pose = await poseEstimator.process(pixelBuffer: pixelBuffer)
             try? await inserter.processFrame(
@@ -57,7 +57,7 @@ struct IntegrationTests {
         let inserter = try VoxelInserter(device: device)
         inserter.samplingStep = 32  // very coarse for speed
 
-        await capture.setOnFrame { pixelBuffer, frameIdx, _, _ in
+        await capture.setOnFrame { pixelBuffer, _, frameIdx, _, _ in
             guard frameIdx <= 50 else { return }
             let pose = await poseEstimator.process(pixelBuffer: pixelBuffer)
             try? await inserter.processFrame(
@@ -94,7 +94,7 @@ struct IntegrationTests {
 
         let capture = VideoCaptureSession(url: videoURL, rate: .fast)
 
-        await capture.setOnFrame { _, _, _, _ in
+        await capture.setOnFrame { _, _, _, _, _ in
             // just read frames for progress test, no processing
         }
 

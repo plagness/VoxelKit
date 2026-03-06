@@ -83,6 +83,60 @@ kernel void voxel_insert(
     float3 worldPoint = pose.rotation * camPoint + pose.position;
     outPositions[linearIdx] = worldPoint;
 }
+
+// MARK: - Voxel insertion with color sampling
+
+struct ColoredInsertParams {
+    uint colorWidth;
+    uint colorHeight;
+    uint depthWidth;
+    uint depthHeight;
+};
+
+kernel void voxel_insert_colored(
+    texture2d<float, access::read> depthTexture  [[ texture(0) ]],
+    texture2d<float, access::read> colorTexture  [[ texture(1) ]],
+    constant CameraIntrinsics& intrinsics        [[ buffer(0) ]],
+    constant CameraPose& pose                    [[ buffer(1) ]],
+    device float3* outPositions                  [[ buffer(2) ]],
+    device uchar4* outColors                     [[ buffer(3) ]],
+    constant ColoredInsertParams& params         [[ buffer(4) ]],
+    uint2 gid                                    [[ thread_position_in_grid ]]
+) {
+    uint2 depthSize = uint2(depthTexture.get_width(), depthTexture.get_height());
+    if (gid.x >= depthSize.x || gid.y >= depthSize.y) return;
+
+    float depthRaw = depthTexture.read(gid).r;
+    float depth = depthRaw * intrinsics.depthScale;
+
+    uint linearIdx = gid.y * depthSize.x + gid.x;
+
+    if (depth < intrinsics.minDepth || depth > intrinsics.maxDepth || isnan(depth) || isinf(depth)) {
+        outPositions[linearIdx] = float3(NAN, NAN, NAN);
+        outColors[linearIdx] = uchar4(0, 0, 0, 0);
+        return;
+    }
+
+    float u = float(gid.x);
+    float v = float(gid.y);
+    float3 camPoint = float3(
+        (u - intrinsics.cx) * depth / intrinsics.fx,
+        (v - intrinsics.cy) * depth / intrinsics.fy,
+        depth
+    );
+
+    float3 worldPoint = pose.rotation * camPoint + pose.position;
+    outPositions[linearIdx] = worldPoint;
+
+    // Sample color from camera image (depth and camera have different resolutions)
+    float2 colorUV = float2(gid) * float2(float(params.colorWidth) / float(params.depthWidth),
+                                           float(params.colorHeight) / float(params.depthHeight));
+    uint2 colorCoord = uint2(clamp(colorUV, float2(0), float2(float(params.colorWidth - 1),
+                                                                float(params.colorHeight - 1))));
+    float4 color = colorTexture.read(colorCoord);
+    outColors[linearIdx] = uchar4(uchar(color.r * 255.0), uchar(color.g * 255.0),
+                                   uchar(color.b * 255.0), 255);
+}
 """
 
     /// Create a MTLLibrary from inline source (works in CLI, tests, and apps).

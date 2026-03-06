@@ -36,7 +36,7 @@ public final class OctreeChunk: @unchecked Sendable {
 
     public init(key: ChunkKey) {
         self.key = key
-        self.tree = Octree(resolution: 0.05, origin: key.worldOrigin, rootSize: 1.0)
+        self.tree = Octree(resolution: 0.03125, origin: key.worldOrigin, rootSize: 1.0)
     }
 }
 
@@ -73,6 +73,22 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
         let timestamp = UInt32(Date.now.timeIntervalSince(sessionStart))
         for pos in positions {
             insertOccupied(pos, robotIndex: robotIndex, timestamp: timestamp)
+        }
+    }
+
+    /// Insert a batch of colored voxels (camera-sampled RGB).
+    public func insertColoredPositions(_ voxels: [ColoredPosition], robotIndex: Int = 0) {
+        let timestamp = UInt32(Date.now.timeIntervalSince(sessionStart))
+        for v in voxels {
+            let key = chunkKeyFor(v.position)
+            let chunk = getOrCreateChunk(key)
+            chunk.tree.updateOccupancy(at: v.position, hit: true, robotIndex: robotIndex,
+                                       timestamp: timestamp, color: v.color)
+            chunk.isDirty = true
+            chunk.version &+= 1
+            dirtyChunks.insert(key)
+            mergedCache.removeValue(forKey: key)
+            mergedCacheDepth.removeValue(forKey: key)
         }
     }
 
@@ -162,6 +178,24 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
         guard all.count > maxCount else { return all }
         let stride = max(1, all.count / maxCount)
         return stride == 1 ? all : (0..<maxCount).map { all[$0 * stride] }
+    }
+
+    /// Sample up to `maxCount` colored voxels (position + stored RGB).
+    public func sampleColoredPositions(maxCount: Int) -> [(SIMD3<Float>, (UInt8, UInt8, UInt8))] {
+        let all = collectPackedVoxels()
+        let selected: [PackedVoxel]
+        if all.count > maxCount {
+            let stride = max(1, all.count / maxCount)
+            selected = (0..<min(maxCount, all.count)).map { all[$0 * stride] }
+        } else {
+            selected = all
+        }
+        return selected.map { pv in
+            let r = UInt8((pv.colorAndFlags >> 24) & 0xFF)
+            let g = UInt8((pv.colorAndFlags >> 16) & 0xFF)
+            let b = UInt8((pv.colorAndFlags >> 8)  & 0xFF)
+            return (SIMD3<Float>(pv.x, pv.y, pv.z), (r, g, b))
+        }
     }
 
     /// Collect all occupied voxels as PackedVoxel (for GPU upload).
