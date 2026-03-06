@@ -6,12 +6,23 @@ import simd
 /// An actor that owns a `ChunkedOctreeStore` and provides the single point
 /// of insertion for voxel data arriving from `VideoCaptureSession` or LiDAR.
 /// Thread-safe: all mutations go through the actor.
+/// Pipeline mode: additive (classic) or subtractive (sculpting).
+public enum PipelineMode: String, Sendable, Codable {
+    /// Classic: add voxels one-by-one from sensor data.
+    case additive
+    /// Sculpting: start with solid volumes, carve free space.
+    case subtractive
+}
+
 public actor BotMapWorld {
 
     // MARK: - Public state
 
     /// Underlying voxel store (access only from actor context).
     public let store: ChunkedOctreeStore
+
+    /// Pipeline mode: additive (classic) or subtractive (sculpting).
+    public private(set) var pipelineMode: PipelineMode = .additive
 
     /// Display name for this map (e.g. filename without extension).
     public var name: String
@@ -62,6 +73,52 @@ public actor BotMapWorld {
         store.insertFrame(frame, robotIndex: robotIndex)
     }
 
+    /// Set the pipeline mode.
+    public func setPipelineMode(_ mode: PipelineMode) {
+        pipelineMode = mode
+    }
+
+    // MARK: - Subtractive Insertion
+
+    /// Insert a subtractive observation at LOD-appropriate depth.
+    /// Hits mark surface, misses carve free space.
+    public func insertSubtractive(at pos: SIMD3<Float>, hit: Bool,
+                                   cameraPos: SIMD3<Float>,
+                                   robotIndex: Int = 0,
+                                   color: (UInt8, UInt8, UInt8) = (128, 128, 128)) {
+        store.insertSubtractive(at: pos, hit: hit, cameraPos: cameraPos,
+                                robotIndex: robotIndex, color: color)
+    }
+
+    /// Carve a ray through the world: free space before hitDistance, surface at hitDistance.
+    @discardableResult
+    public func carveRay(origin: SIMD3<Float>, direction: SIMD3<Float>,
+                          hitDistance: Float?, maxDistance: Float = 10.0,
+                          robotIndex: Int = 0,
+                          color: (UInt8, UInt8, UInt8) = (128, 128, 128)) -> RayCarveResult {
+        OctreeRayCaster.carveRay(origin: origin, direction: direction,
+                                  hitDistance: hitDistance, maxDistance: maxDistance,
+                                  store: store, cameraPos: origin,
+                                  robotIndex: robotIndex, color: color)
+    }
+
+    /// Batch carve multiple rays (from depth back-projection).
+    @discardableResult
+    public func carveRays(
+        _ rays: [(direction: SIMD3<Float>, hitDistance: Float?, color: (UInt8, UInt8, UInt8))],
+        origin: SIMD3<Float>, maxDistance: Float = 10.0,
+        robotIndex: Int = 0
+    ) -> RayCarveResult {
+        OctreeRayCaster.carveRays(rays, origin: origin, maxDistance: maxDistance,
+                                   store: store, robotIndex: robotIndex)
+    }
+
+    /// Initialize a bounding box as "unknown-solid" for the subtractive pipeline.
+    /// Used by object detection: distant silhouette → large solid block.
+    public func initializeSolidRegion(_ aabb: AABB, color: (UInt8, UInt8, UInt8) = (128, 128, 128)) {
+        store.initializeSolidRegion(aabb, color: color)
+    }
+
     // MARK: - Maintenance
 
     /// Prune uniform octree subtrees (reduces memory after dense capture).
@@ -92,9 +149,11 @@ public actor BotMapWorld {
     }
 
     /// Collect greedy-merged voxels for rendering (cuboids with center + halfSize + color).
+    /// Automatically respects `pipelineMode`: subtractive includes unobserved-solid nodes.
     public func collectMergedVoxels(cameraPos: SIMD3<Float> = .zero,
                                      frustumPlanes: [SIMD4<Float>] = []) -> [MergedVoxel] {
-        store.collectMergedVoxels(cameraPos: cameraPos, frustumPlanes: frustumPlanes)
+        store.collectMergedVoxels(cameraPos: cameraPos, frustumPlanes: frustumPlanes,
+                                  subtractiveMode: pipelineMode == .subtractive)
     }
 
     // MARK: - Persistence

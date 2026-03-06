@@ -76,23 +76,118 @@ public final class Octree: @unchecked Sendable {
         }
     }
 
+    // MARK: - Subtractive Update
+
+    /// Subtractive occupancy update: inserts at `targetDepth` (not always maxDepth).
+    /// Supports lazy subdivision — only creates children when conflicting evidence exists.
+    ///
+    /// - Parameters:
+    ///   - point: World-space position.
+    ///   - hit: true = surface detected, false = free space (carving).
+    ///   - targetDepth: How deep to insert (LOD-aware, may be < maxDepth).
+    ///   - robotIndex: Robot observer index.
+    ///   - timestamp: Session-relative timestamp.
+    ///   - color: RGB color for hits.
+    public func updateSubtractive(at point: SIMD3<Float>, hit: Bool,
+                                   targetDepth: Int, robotIndex: Int = 0,
+                                   timestamp: UInt32 = 0,
+                                   color: (UInt8, UInt8, UInt8) = (128, 128, 128)) {
+        let localPoint = point - origin
+        guard all(localPoint .>= .zero) && all(localPoint .< SIMD3<Float>(repeating: rootSize)) else {
+            return
+        }
+
+        let effectiveDepth = min(targetDepth, maxDepth)
+        var node = root
+        var nodeOrigin = SIMD3<Float>.zero
+        var nodeSize = rootSize
+
+        for depth in 0..<effectiveDepth {
+            let halfSize = nodeSize * 0.5
+            let childIdx = childIndex(point: localPoint, nodeOrigin: nodeOrigin, halfSize: halfSize)
+
+            if node.children == nil {
+                // Only subdivide if this node has conflicting evidence
+                // or if we haven't reached target depth yet
+                let shouldSubdivide: Bool
+                if node.isUnobserved {
+                    // Unobserved node — subdivide to reach target depth
+                    shouldSubdivide = true
+                } else if (hit && !node.isOccupied) || (!hit && node.isConservativelyOccupied) {
+                    // Conflicting evidence — need finer resolution
+                    shouldSubdivide = true
+                    node.subdivisionHint |= UInt8(1 << (childIdx & 7))
+                } else if depth < effectiveDepth - 1 {
+                    shouldSubdivide = true
+                } else {
+                    shouldSubdivide = false
+                }
+
+                guard shouldSubdivide else { break }
+                node.children = ContiguousArray<OctreeNode?>(repeating: nil, count: 8)
+            }
+
+            if node.children![childIdx] == nil {
+                let child = OctreeNode()
+                // Inherit parent state for subtractive: new children start as parent's state
+                child.logOdds = node.logOdds
+                child.color = node.color
+                child.layer = node.layer
+                child.observationCount = node.observationCount
+                node.children![childIdx] = child
+                nodeCount += 1
+            }
+
+            nodeOrigin = nodeOrigin + childOffset(index: childIdx, halfSize: halfSize)
+            nodeSize = halfSize
+            node = node.children![childIdx]!
+        }
+
+        // Apply update at the reached node
+        let wasOccupied = node.isOccupied
+        let delta = hit ? Self.logOddsHit : Self.logOddsMiss
+        node.logOdds = max(Self.logOddsMin, min(Self.logOddsMax, node.logOdds + delta))
+        node.observationCount = node.observationCount < UInt16.max ? node.observationCount &+ 1 : .max
+        node.lastObserved = timestamp
+        if robotIndex < 64 { node.observerMask |= (1 << robotIndex) }
+
+        if hit {
+            node.color = color
+            node.signedDistance = 0  // Surface
+        } else {
+            node.signedDistance = -1  // Free space marker
+        }
+
+        if !wasOccupied && node.isOccupied {
+            occupiedLeafCount += 1
+        } else if wasOccupied && !node.isOccupied {
+            occupiedLeafCount -= 1
+        }
+    }
+
     // MARK: - Query
 
     /// Collect all occupied voxels as PackedVoxel array.
-    public func collectOccupiedVoxels(minLogOdds: Float = 0.0) -> [PackedVoxel] {
+    /// When `includeUnobserved` is true, unobserved nodes are treated as conservatively
+    /// occupied (subtractive mode: unknown = solid).
+    public func collectOccupiedVoxels(minLogOdds: Float = 0.0,
+                                       includeUnobserved: Bool = false) -> [PackedVoxel] {
         var result = [PackedVoxel]()
         result.reserveCapacity(max(occupiedLeafCount, 64))
         collectRecursive(node: root, origin: origin, size: rootSize,
-                         minLogOdds: minLogOdds, result: &result)
+                         minLogOdds: minLogOdds, includeUnobserved: includeUnobserved,
+                         result: &result)
         return result
     }
 
     /// Collect voxels at a specific depth for LOD queries.
-    public func collectAtDepth(_ targetDepth: Int, minLogOdds: Float = 0.0) -> [PackedVoxel] {
+    public func collectAtDepth(_ targetDepth: Int, minLogOdds: Float = 0.0,
+                                includeUnobserved: Bool = false) -> [PackedVoxel] {
         var result = [PackedVoxel]()
         collectAtDepthRecursive(node: root, origin: origin, size: rootSize,
                                 currentDepth: 0, targetDepth: targetDepth,
-                                minLogOdds: minLogOdds, result: &result)
+                                minLogOdds: minLogOdds, includeUnobserved: includeUnobserved,
+                                result: &result)
         return result
     }
 
@@ -150,9 +245,12 @@ public final class Octree: @unchecked Sendable {
     // MARK: - Private: Collection
 
     private func collectRecursive(node: OctreeNode, origin: SIMD3<Float>, size: Float,
-                                  minLogOdds: Float, result: inout [PackedVoxel]) {
+                                  minLogOdds: Float, includeUnobserved: Bool = false,
+                                  result: inout [PackedVoxel]) {
         if node.isLeaf {
-            if node.logOdds >= minLogOdds {
+            let include = node.logOdds >= minLogOdds ||
+                          (includeUnobserved && node.isConservativelyOccupied)
+            if include {
                 let center = origin + SIMD3<Float>(repeating: size * 0.5)
                 result.append(PackedVoxel(position: center, color: node.color, layer: node.layer))
             }
@@ -163,15 +261,19 @@ public final class Octree: @unchecked Sendable {
         for i in 0..<8 {
             guard let child = children[i] else { continue }
             collectRecursive(node: child, origin: origin + childOffset(index: i, halfSize: halfSize),
-                             size: halfSize, minLogOdds: minLogOdds, result: &result)
+                             size: halfSize, minLogOdds: minLogOdds,
+                             includeUnobserved: includeUnobserved, result: &result)
         }
     }
 
     private func collectAtDepthRecursive(node: OctreeNode, origin: SIMD3<Float>, size: Float,
                                          currentDepth: Int, targetDepth: Int,
-                                         minLogOdds: Float, result: inout [PackedVoxel]) {
+                                         minLogOdds: Float, includeUnobserved: Bool = false,
+                                         result: inout [PackedVoxel]) {
         if currentDepth >= targetDepth || node.isLeaf {
-            if node.logOdds >= minLogOdds {
+            let include = node.logOdds >= minLogOdds ||
+                          (includeUnobserved && node.isConservativelyOccupied)
+            if include {
                 let center = origin + SIMD3<Float>(repeating: size * 0.5)
                 result.append(PackedVoxel(position: center, color: node.color, layer: node.layer))
             }
@@ -183,7 +285,8 @@ public final class Octree: @unchecked Sendable {
             guard let child = children[i] else { continue }
             collectAtDepthRecursive(node: child, origin: origin + childOffset(index: i, halfSize: halfSize),
                                     size: halfSize, currentDepth: currentDepth + 1, targetDepth: targetDepth,
-                                    minLogOdds: minLogOdds, result: &result)
+                                    minLogOdds: minLogOdds, includeUnobserved: includeUnobserved,
+                                    result: &result)
         }
     }
 
@@ -225,6 +328,9 @@ public final class Octree: @unchecked Sendable {
             node.color = firstChild.color
             node.observerMask = firstChild.observerMask
             node.lastObserved = firstChild.lastObserved
+            node.observationCount = firstChild.observationCount
+            node.signedDistance = firstChild.signedDistance
+            node.subdivisionHint = 0
             let childCount = children.compactMap({ $0 }).count
             node.children = nil
             nodeCount -= childCount

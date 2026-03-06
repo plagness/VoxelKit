@@ -135,6 +135,47 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
         mergedCacheDepth.removeValue(forKey: key)
     }
 
+    // MARK: - Subtractive Insert
+
+    /// Insert a subtractive observation (surface hit or free-space carve) at LOD-appropriate depth.
+    public func insertSubtractive(at pos: SIMD3<Float>, hit: Bool,
+                                   cameraPos: SIMD3<Float>,
+                                   robotIndex: Int = 0, timestamp: UInt32 = 0,
+                                   color: (UInt8, UInt8, UInt8) = (128, 128, 128)) {
+        let key = chunkKeyFor(pos)
+        let chunk = getOrCreateChunk(key)
+        let (depth, _) = lodParams(for: key.worldOrigin, cameraPos: cameraPos)
+        chunk.tree.updateSubtractive(at: pos, hit: hit, targetDepth: depth,
+                                      robotIndex: robotIndex, timestamp: timestamp, color: color)
+        chunk.isDirty = true
+        chunk.version &+= 1
+        dirtyChunks.insert(key)
+        mergedCache.removeValue(forKey: key)
+        mergedCacheDepth.removeValue(forKey: key)
+    }
+
+    /// Initialize a region as "unknown-solid" for the subtractive pipeline.
+    /// Used by object detection: distant silhouette → large solid bounding box.
+    public func initializeSolidRegion(_ aabb: AABB, color: (UInt8, UInt8, UInt8) = (128, 128, 128)) {
+        // Fill the AABB with chunks. Each chunk's root starts as unobserved (conservatively solid).
+        let minKey = chunkKeyFor(aabb.min)
+        let maxKey = chunkKeyFor(aabb.max)
+        for z in minKey.z...maxKey.z {
+            for y in minKey.y...maxKey.y {
+                for x in minKey.x...maxKey.x {
+                    let key = ChunkKey(x: x, y: y, z: z)
+                    let chunk = getOrCreateChunk(key)
+                    // Set root color for unobserved rendering
+                    chunk.tree.root.color = color
+                    chunk.isDirty = true
+                    dirtyChunks.insert(key)
+                    mergedCache.removeValue(forKey: key)
+                    mergedCacheDepth.removeValue(forKey: key)
+                }
+            }
+        }
+    }
+
     // MARK: - Query
 
     public var voxelCount: Int {
@@ -210,8 +251,10 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
     }
 
     /// Collect greedy-merged voxels for instanced rendering.
+    /// When `subtractiveMode` is true, unobserved nodes are included as solid.
     public func collectMergedVoxels(cameraPos: SIMD3<Float> = .zero,
-                                    frustumPlanes: [SIMD4<Float>] = []) -> [MergedVoxel] {
+                                    frustumPlanes: [SIMD4<Float>] = [],
+                                    subtractiveMode: Bool = false) -> [MergedVoxel] {
         var result = [MergedVoxel]()
         let cull = !frustumPlanes.isEmpty
 
@@ -223,8 +266,8 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
                 result.append(contentsOf: cached)
             } else {
                 let raw = depth >= chunk.tree.maxDepth
-                    ? chunk.tree.collectOccupiedVoxels()
-                    : chunk.tree.collectAtDepth(depth)
+                    ? chunk.tree.collectOccupiedVoxels(includeUnobserved: subtractiveMode)
+                    : chunk.tree.collectAtDepth(depth, includeUnobserved: subtractiveMode)
                 let merged = GreedyMesher.merge(voxels: raw, voxelSize: voxelSize,
                                                 chunkOrigin: key.worldOrigin)
                 mergedCache[key] = merged

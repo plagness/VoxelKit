@@ -22,6 +22,20 @@ public final class OctreeNode: @unchecked Sendable {
     /// Seconds since mapping session start (for dynamic layer TTL)
     public var lastObserved: UInt32 = 0
 
+    // MARK: - Subtractive fields
+
+    /// Number of sensor observations that contributed to this node.
+    /// 0 = never observed ("unknown-solid" in subtractive mode).
+    public var observationCount: UInt16 = 0
+
+    /// Truncated signed distance to nearest surface.
+    /// +∞ = no observation, 0 = surface, + = inside solid, - = free space.
+    public var signedDistance: Float = .greatestFiniteMagnitude
+
+    /// Bitmask of octant directions with conflicting occupancy evidence.
+    /// Non-zero = candidate for subdivision in next refinement pass.
+    public var subdivisionHint: UInt8 = 0
+
     /// Children: nil = leaf, 8-element array = interior node.
     public var children: ContiguousArray<OctreeNode?>?
 
@@ -38,6 +52,15 @@ public final class OctreeNode: @unchecked Sendable {
 
     /// Whether this voxel is considered occupied (positive log-odds)
     public var isOccupied: Bool { logOdds > 0 }
+
+    /// Whether this node has never been observed by any sensor.
+    public var isUnobserved: Bool { observationCount == 0 }
+
+    /// Subtractive model: unobserved = conservatively solid, or positively occupied.
+    public var isConservativelyOccupied: Bool { isUnobserved || logOdds > 0 }
+
+    /// Whether this leaf needs subdivision (conflicting evidence at current scale).
+    public var needsRefinement: Bool { subdivisionHint != 0 && children == nil }
 
     /// Number of observers that have seen this node
     public var observerCount: Int { observerMask.nonzeroBitCount }
