@@ -64,7 +64,15 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
 
     private let sessionStart = Date.now
 
+    /// Optional chunk streaming manager for large-scale worlds.
+    public var streamManager: ChunkStreamManager?
+
     public init() {}
+
+    /// Initialize with chunk streaming for 10+ km² worlds.
+    public init(streamManager: ChunkStreamManager) {
+        self.streamManager = streamManager
+    }
 
     // MARK: - Insert
 
@@ -74,6 +82,7 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
         for pos in positions {
             insertOccupied(pos, robotIndex: robotIndex, timestamp: timestamp)
         }
+        evictIfNeeded()
     }
 
     /// Insert a batch of colored voxels (camera-sampled RGB).
@@ -90,6 +99,7 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
             mergedCache.removeValue(forKey: key)
             mergedCacheDepth.removeValue(forKey: key)
         }
+        evictIfNeeded()
     }
 
     /// Insert a LiDAR frame with free-space ray casting and plane detection.
@@ -121,6 +131,7 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
         for pos in fillPositions {
             insertOccupied(pos, robotIndex: robotIndex, timestamp: timestamp)
         }
+        evictIfNeeded()
     }
 
     private func insertOccupied(_ pos: SIMD3<Float>, robotIndex: Int, timestamp: UInt32) {
@@ -327,6 +338,13 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
         chunks[key] = chunk
     }
 
+    /// Remove a single chunk (used by ChunkStreamManager for LRU eviction).
+    public func removeChunk(_ key: ChunkKey) {
+        chunks.removeValue(forKey: key)
+        mergedCache.removeValue(forKey: key)
+        mergedCacheDepth.removeValue(forKey: key)
+    }
+
     // MARK: - Frustum culling (public for VoxelKitCompute)
 
     public func chunkInFrustum(origin: SIMD3<Float>, planes: [SIMD4<Float>]) -> Bool {
@@ -360,9 +378,29 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
 
     private func getOrCreateChunk(_ key: ChunkKey) -> OctreeChunk {
         if let existing = chunks[key] { return existing }
+
+        // Try loading from disk (streaming manager)
+        if let sm = streamManager, let loaded = sm.loadFromDisk(key) {
+            chunks[key] = loaded
+            sm.touch(key)
+            return loaded
+        }
+
         let chunk = OctreeChunk(key: key)
         chunks[key] = chunk
+        streamManager?.touch(key)
         return chunk
+    }
+
+    /// Evict LRU chunks to disk if streaming is enabled.
+    /// Call after batch insertions to keep memory bounded.
+    public func evictIfNeeded() {
+        streamManager?.evictIfNeeded(store: self)
+    }
+
+    /// Flush all chunks to disk (for shutdown / save).
+    public func flushToDisk() {
+        streamManager?.flushAll(store: self)
     }
 
     private func lodParams(for chunkOrigin: SIMD3<Float>,

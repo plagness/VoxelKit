@@ -4,40 +4,55 @@ import Compression
 
 /// Serializer for the `.botmap` file format.
 ///
-/// Format:
-/// - 8 bytes: magic `BOTMAP01`
+/// BOTMAP02 format (v2):
+/// - 8 bytes: magic `BOTMAP02`
 /// - 4 bytes: JSON metadata length (UInt32 little-endian)
-/// - N bytes: JSON metadata (UTF-8)
+/// - N bytes: JSON metadata (UTF-8) — includes pipelineMode
 /// - 4 bytes: voxel count (UInt32 little-endian)
-/// - M bytes: LZ4-compressed voxel positions (each: 3 × Float32 = 12 bytes)
+/// - 4 bytes: raw data size (for LZ4 decompression)
+/// - M bytes: LZ4-compressed voxel data
+///   Each voxel: position(12B) + colorAndFlags(4B) + observationCount(2B) + signedDistance(4B) = 22 bytes
+///
+/// Backward compatible: reads BOTMAP01 (12B/voxel, positions only).
 public enum BotMapSerializer {
 
-    private static let magic = "BOTMAP01"
+    private static let magicV1 = "BOTMAP01"
+    private static let magicV2 = "BOTMAP02"
 
     // MARK: - Save
 
     public static func save(world: BotMapWorld, to url: URL) async throws {
         // Collect data on actor
-        let positions = await world.store.allOccupiedPositions()
+        let packedVoxels = await world.store.collectPackedVoxels()
         let name = await world.name
         let createdAt = await world.createdAt
-        let count = positions.count
+        let pipelineMode = await world.pipelineMode
+        let count = packedVoxels.count
+
+        // Collect observation data from octree nodes
+        let nodeData = collectNodeData(from: world.store)
 
         // Build JSON header
         let meta = BotMapMeta(
             name: name,
             voxelCount: count,
             createdAt: ISO8601DateFormatter().string(from: createdAt),
-            version: 1
+            version: 2,
+            pipelineMode: pipelineMode.rawValue
         )
         let jsonData = try JSONEncoder().encode(meta)
 
-        // Serialize voxel positions: [x, y, z, x, y, z, ...]
-        var rawVoxels = Data(capacity: count * 12)
-        for pos in positions {
-            withUnsafeBytes(of: pos.x) { rawVoxels.append(contentsOf: $0) }
-            withUnsafeBytes(of: pos.y) { rawVoxels.append(contentsOf: $0) }
-            withUnsafeBytes(of: pos.z) { rawVoxels.append(contentsOf: $0) }
+        // Serialize voxels: position(12B) + colorAndFlags(4B) + observationCount(2B) + signedDistance(4B) = 22B each
+        var rawVoxels = Data(capacity: count * 22)
+        for (i, pv) in packedVoxels.enumerated() {
+            withUnsafeBytes(of: pv.x) { rawVoxels.append(contentsOf: $0) }
+            withUnsafeBytes(of: pv.y) { rawVoxels.append(contentsOf: $0) }
+            withUnsafeBytes(of: pv.z) { rawVoxels.append(contentsOf: $0) }
+            withUnsafeBytes(of: pv.colorAndFlags) { rawVoxels.append(contentsOf: $0) }
+            let obsCount = i < nodeData.count ? nodeData[i].observationCount : UInt16(1)
+            let signedDist = i < nodeData.count ? nodeData[i].signedDistance : Float.greatestFiniteMagnitude
+            withUnsafeBytes(of: obsCount) { rawVoxels.append(contentsOf: $0) }
+            withUnsafeBytes(of: signedDist) { rawVoxels.append(contentsOf: $0) }
         }
 
         // LZ4 compress voxel data
@@ -45,17 +60,42 @@ public enum BotMapSerializer {
 
         // Assemble file
         var output = Data()
-        output.append(contentsOf: magic.utf8)                      // 8 bytes magic
+        output.append(contentsOf: magicV2.utf8)                    // 8 bytes magic
         var jsonLen = UInt32(jsonData.count).littleEndian
         withUnsafeBytes(of: &jsonLen) { output.append(contentsOf: $0) }  // 4 bytes JSON len
         output.append(jsonData)                                    // JSON metadata
         var voxCount = UInt32(count).littleEndian
         withUnsafeBytes(of: &voxCount) { output.append(contentsOf: $0) } // 4 bytes voxel count
         var rawLen = UInt32(rawVoxels.count).littleEndian
-        withUnsafeBytes(of: &rawLen) { output.append(contentsOf: $0) }   // 4 bytes raw size (for decompress)
+        withUnsafeBytes(of: &rawLen) { output.append(contentsOf: $0) }   // 4 bytes raw size
         output.append(compressedVoxels)                            // LZ4 data
 
         try output.write(to: url)
+    }
+
+    /// Collect observation data parallel to PackedVoxels for serialization.
+    private static func collectNodeData(from store: ChunkedOctreeStore) -> [(observationCount: UInt16, signedDistance: Float)] {
+        var result: [(observationCount: UInt16, signedDistance: Float)] = []
+        for (_, chunk) in store.allChunks {
+            collectNodeDataRecursive(node: chunk.tree.root, result: &result)
+        }
+        return result
+    }
+
+    private static func collectNodeDataRecursive(node: OctreeNode,
+                                                  result: inout [(observationCount: UInt16, signedDistance: Float)]) {
+        if node.isLeaf {
+            if node.isOccupied {
+                result.append((node.observationCount, node.signedDistance))
+            }
+            return
+        }
+        guard let children = node.children else { return }
+        for i in 0..<8 {
+            if let child = children[i] {
+                collectNodeDataRecursive(node: child, result: &result)
+            }
+        }
     }
 
     // MARK: - Load
@@ -64,11 +104,13 @@ public enum BotMapSerializer {
         let data = try Data(contentsOf: url)
         var offset = data.startIndex
 
-        // Magic
+        // Magic (8 bytes)
         let magicBytes = data[offset..<offset + 8]
-        guard String(bytes: magicBytes, encoding: .utf8) == magic else {
+        let magicStr = String(bytes: magicBytes, encoding: .utf8)
+        guard magicStr == magicV1 || magicStr == magicV2 else {
             throw BotMapError.invalidMagic
         }
+        let isV2 = magicStr == magicV2
         offset += 8
 
         // JSON length
@@ -92,26 +134,63 @@ public enum BotMapSerializer {
         let compressedData = data[offset...]
         let rawVoxels = try lz4Decompress(compressedData, originalSize: rawSize)
 
-        // Parse positions
-        guard rawVoxels.count == voxelCount * 12 else {
-            throw BotMapError.dataSizeMismatch(expected: voxelCount * 12, got: rawVoxels.count)
-        }
-
-        var positions = [SIMD3<Float>]()
-        positions.reserveCapacity(voxelCount)
-        rawVoxels.withUnsafeBytes { ptr in
-            let floats = ptr.bindMemory(to: Float.self)
-            for i in 0..<voxelCount {
-                positions.append(SIMD3<Float>(floats[i*3], floats[i*3+1], floats[i*3+2]))
-            }
-        }
-
-        // Build world
         let store = ChunkedOctreeStore()
-        store.insertPositions(positions)
+
+        if isV2 {
+            // V2: 22 bytes per voxel (position + color + observationCount + signedDistance)
+            let bytesPerVoxel = 22
+            guard rawVoxels.count == voxelCount * bytesPerVoxel else {
+                throw BotMapError.dataSizeMismatch(expected: voxelCount * bytesPerVoxel, got: rawVoxels.count)
+            }
+
+            var coloredPositions = [ColoredPosition]()
+            coloredPositions.reserveCapacity(voxelCount)
+
+            rawVoxels.withUnsafeBytes { ptr in
+                for i in 0..<voxelCount {
+                    let base = i * bytesPerVoxel
+                    let x = ptr.loadUnaligned(fromByteOffset: base, as: Float.self)
+                    let y = ptr.loadUnaligned(fromByteOffset: base + 4, as: Float.self)
+                    let z = ptr.loadUnaligned(fromByteOffset: base + 8, as: Float.self)
+                    let cf = ptr.loadUnaligned(fromByteOffset: base + 12, as: UInt32.self)
+                    let r = UInt8((cf >> 24) & 0xFF)
+                    let g = UInt8((cf >> 16) & 0xFF)
+                    let b = UInt8((cf >> 8)  & 0xFF)
+                    // observationCount at base+16 (2B) and signedDistance at base+18 (4B)
+                    // are stored but restored as regular occupancy (log-odds handles state)
+                    coloredPositions.append(ColoredPosition(
+                        position: SIMD3<Float>(x, y, z),
+                        color: (r, g, b)
+                    ))
+                }
+            }
+            store.insertColoredPositions(coloredPositions)
+        } else {
+            // V1: 12 bytes per voxel (position only)
+            guard rawVoxels.count == voxelCount * 12 else {
+                throw BotMapError.dataSizeMismatch(expected: voxelCount * 12, got: rawVoxels.count)
+            }
+
+            var positions = [SIMD3<Float>]()
+            positions.reserveCapacity(voxelCount)
+            rawVoxels.withUnsafeBytes { ptr in
+                let floats = ptr.bindMemory(to: Float.self)
+                for i in 0..<voxelCount {
+                    positions.append(SIMD3<Float>(floats[i*3], floats[i*3+1], floats[i*3+2]))
+                }
+            }
+            store.insertPositions(positions)
+        }
 
         let createdAt = ISO8601DateFormatter().date(from: meta.createdAt) ?? .now
-        return BotMapWorld(store: store, name: meta.name, createdAt: createdAt)
+        let world = BotMapWorld(store: store, name: meta.name, createdAt: createdAt)
+
+        // Restore pipeline mode from V2 metadata
+        if let modeStr = meta.pipelineMode, let mode = PipelineMode(rawValue: modeStr) {
+            await world.setPipelineMode(mode)
+        }
+
+        return world
     }
 
     // MARK: - LZ4 helpers
@@ -170,6 +249,7 @@ private struct BotMapMeta: Codable {
     let voxelCount: Int
     let createdAt: String
     let version: Int
+    var pipelineMode: String?
 }
 
 // MARK: - Errors

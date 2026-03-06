@@ -44,6 +44,15 @@ public struct CameraIntrinsics: Sendable {
         fx: 1552, fy: 1552, cx: 960, cy: 540, width: 1920, height: 1080
     )
 
+    /// 3×3 intrinsic matrix for use with neural pipeline.
+    public var matrix3x3: simd_float3x3 {
+        simd_float3x3(
+            SIMD3<Float>(fx, 0, 0),
+            SIMD3<Float>(0, fy, 0),
+            SIMD3<Float>(cx, cy, 1)
+        )
+    }
+
     // MARK: - Back-projection
 
     /// Convert a pixel (u, v) and depth `d` (metres) to camera-space 3D position.

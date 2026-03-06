@@ -21,6 +21,9 @@ public actor BotMapWorld {
     /// Underlying voxel store (access only from actor context).
     public let store: ChunkedOctreeStore
 
+    /// Super-chunk manager for macro-LOD distant rendering (100-500m).
+    public let superChunkManager = SuperChunkManager()
+
     /// Pipeline mode: additive (classic) or subtractive (sculpting).
     public private(set) var pipelineMode: PipelineMode = .additive
 
@@ -150,10 +153,22 @@ public actor BotMapWorld {
 
     /// Collect greedy-merged voxels for rendering (cuboids with center + halfSize + color).
     /// Automatically respects `pipelineMode`: subtractive includes unobserved-solid nodes.
+    /// Includes super-chunks for distant terrain (100-500m).
     public func collectMergedVoxels(cameraPos: SIMD3<Float> = .zero,
                                      frustumPlanes: [SIMD4<Float>] = []) -> [MergedVoxel] {
-        store.collectMergedVoxels(cameraPos: cameraPos, frustumPlanes: frustumPlanes,
-                                  subtractiveMode: pipelineMode == .subtractive)
+        var result = store.collectMergedVoxels(cameraPos: cameraPos, frustumPlanes: frustumPlanes,
+                                                subtractiveMode: pipelineMode == .subtractive)
+        // Add distant terrain from super-chunks
+        let distant = superChunkManager.collectMergedVoxels(cameraPos: cameraPos,
+                                                             frustumPlanes: frustumPlanes)
+        result.append(contentsOf: distant)
+        return result
+    }
+
+    /// Rebuild dirty super-chunks from regular chunk data.
+    /// Call periodically (e.g., every few seconds), not every frame.
+    public func rebuildSuperChunks() {
+        superChunkManager.rebuildDirty(from: store)
     }
 
     // MARK: - Persistence
