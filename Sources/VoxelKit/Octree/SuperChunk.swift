@@ -45,7 +45,8 @@ public final class SuperChunkManager: @unchecked Sendable {
     private var dirtySuperChunks: Set<SuperChunkKey> = []
 
     /// Distance beyond which super-chunks are used instead of regular chunks.
-    public var superChunkMinDistance: Float = 100.0
+    /// Matches the last regular LOD band boundary (80m).
+    public var superChunkMinDistance: Float = 80.0
 
     /// Distance beyond which nothing is rendered.
     public var maxRenderDistance: Float = 500.0
@@ -84,16 +85,18 @@ public final class SuperChunkManager: @unchecked Sendable {
         // Clear existing data
         sc.tree.replaceRoot(OctreeNode())
 
-        let baseX = Int16(scKey.x) * 16
-        let baseY = Int16(scKey.y) * 16
-        let baseZ = Int16(scKey.z) * 16
+        let baseX = Int32(scKey.x) * 16
+        let baseY = Int32(scKey.y) * 16
+        let baseZ = Int32(scKey.z) * 16
 
         // Sample each child chunk at depth 1 (coarsest) and insert into super-chunk
         let allChunks = store.allChunks
-        for dz: Int16 in 0..<16 {
-            for dy: Int16 in 0..<16 {
-                for dx: Int16 in 0..<16 {
-                    let cKey = ChunkKey(x: baseX + dx, y: baseY + dy, z: baseZ + dz)
+        for dz: Int32 in 0..<16 {
+            for dy: Int32 in 0..<16 {
+                for dx: Int32 in 0..<16 {
+                    let cKey = ChunkKey(x: Int16(clamping: baseX + dx),
+                                        y: Int16(clamping: baseY + dy),
+                                        z: Int16(clamping: baseZ + dz))
                     guard let chunk = allChunks[cKey] else { continue }
 
                     // Get the dominant color and occupancy from this chunk

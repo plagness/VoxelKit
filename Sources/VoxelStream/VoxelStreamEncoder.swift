@@ -1,11 +1,12 @@
 import Foundation
+import Compression
 import simd
 
 /// Encodes `VoxelStreamFrame` into a binary `Data` blob for network transmission.
 ///
 /// Wire format (little-endian):
 /// ```
-/// Header (140 bytes):
+/// Header (146 bytes):
 ///   [0..3]     magic "VXSF"          (4B)
 ///   [4..7]     sequence UInt32       (4B)
 ///   [8..15]    timestamp Float64     (8B)
@@ -19,25 +20,39 @@ import simd
 ///   [128..131] depthSize UInt32      (4B)
 ///   [132..135] worldPointCount UInt32(4B)
 ///   [136..139] worldPointsSize UInt32(4B) = count × 12
+///   [140]      detectionCount UInt8  (1B)
+///   [141..144] detectionsSize UInt32 (4B) = count × 29
+///   [145]      reserved UInt8        (1B)
 ///
 /// Payload:
-///   [140 ..< 140+jpegSize]           JPEG data
+///   [146 ..< 146+jpegSize]           JPEG data
 ///   [+jpegSize ..< +depthSize]       Float16 depth (if depthSize > 0)
 ///   [+depthSize ..< +worldPtsSize]   Float32×3 world points (if worldPointsSize > 0)
+///   [+worldPtsSize ..< +detSize]     Detection data (if detectionsSize > 0)
 /// ```
 public enum VoxelStreamEncoder {
 
-    public static let headerSize = 140
+    public static let headerSize = 146
     public static let magic: [UInt8] = [0x56, 0x58, 0x53, 0x46] // "VXSF"
 
     public static func encode(_ frame: VoxelStreamFrame) -> Data {
         let jpegSize = UInt32(frame.imageJPEG.count)
-        let depthData = frame.depthFloat16 ?? Data()
+        var depthData = frame.depthFloat16 ?? Data()
+        var frameFlags = frame.flags
+        // LZ4 compress depth if present and large enough to benefit
+        if depthData.count > 64 {
+            if let compressed = lz4Compress(depthData), compressed.count < depthData.count {
+                depthData = compressed
+                frameFlags |= 0x02 // bit 1 = depth is LZ4 compressed
+            }
+        }
         let depthSize = UInt32(depthData.count)
         let worldPtsData = frame.worldPoints ?? Data()
         let worldPtsSize = UInt32(worldPtsData.count)
+        let detData = frame.detections ?? Data()
+        let detSize = UInt32(detData.count)
 
-        var data = Data(capacity: headerSize + Int(jpegSize) + Int(depthSize) + Int(worldPtsSize))
+        var data = Data(capacity: headerSize + Int(jpegSize) + Int(depthSize) + Int(worldPtsSize) + Int(detSize))
 
         // Magic
         data.append(contentsOf: magic)
@@ -79,6 +94,11 @@ public enum VoxelStreamEncoder {
         appendLE(&data, frame.worldPointCount)
         appendLE(&data, worldPtsSize)
 
+        // Detections header
+        data.append(frame.detectionCount)
+        appendLE(&data, detSize)
+        data.append(frameFlags)
+
         // Payload
         data.append(frame.imageJPEG)
         if !depthData.isEmpty {
@@ -86,6 +106,9 @@ public enum VoxelStreamEncoder {
         }
         if !worldPtsData.isEmpty {
             data.append(worldPtsData)
+        }
+        if !detData.isEmpty {
+            data.append(detData)
         }
 
         return data
@@ -114,10 +137,68 @@ public enum VoxelStreamEncoder {
         return encodeLengthPrefixed(frame)
     }
 
+    // MARK: - DeviceStatusMessage
+
+    public static func encodeStatus(_ status: DeviceStatusMessage) -> Data {
+        var data = Data(capacity: DeviceStatusMessage.messageSize)
+        data.append(contentsOf: DeviceStatusMessage.magic)
+        data.append(status.cameraActive ? 1 : 0)
+        data.append(status.gyroActive ? 1 : 0)
+        data.append(status.selectedCamera)
+        data.append(status.batteryLevel)
+        data.append(status.thermalState)
+        data.append(status.trackingState)
+        // Reserved 4 bytes
+        data.append(contentsOf: [0, 0, 0, 0])
+        return data
+    }
+
+    public static func encodeStatusLengthPrefixed(_ status: DeviceStatusMessage) -> Data {
+        let payload = encodeStatus(status)
+        var framed = Data(capacity: 4 + payload.count)
+        appendLE(&framed, UInt32(payload.count))
+        framed.append(payload)
+        return framed
+    }
+
     // MARK: - Helpers
 
     @inline(__always)
     private static func appendLE<T>(_ data: inout Data, _ value: T) {
         withUnsafeBytes(of: value) { data.append(contentsOf: $0) }
+    }
+
+    /// LZ4 compress data. Returns nil on failure.
+    static func lz4Compress(_ input: Data) -> Data? {
+        let capacity = input.count // LZ4 output ≤ input for compressible data
+        var output = Data(count: capacity)
+        let compressedSize = input.withUnsafeBytes { srcBuf in
+            output.withUnsafeMutableBytes { dstBuf in
+                compression_encode_buffer(
+                    dstBuf.baseAddress!.assumingMemoryBound(to: UInt8.self), capacity,
+                    srcBuf.baseAddress!.assumingMemoryBound(to: UInt8.self), input.count,
+                    nil, COMPRESSION_LZ4
+                )
+            }
+        }
+        guard compressedSize > 0 else { return nil }
+        output.count = compressedSize
+        return output
+    }
+
+    /// LZ4 decompress data to expected size. Returns nil on failure.
+    static func lz4Decompress(_ input: Data, decompressedSize: Int) -> Data? {
+        var output = Data(count: decompressedSize)
+        let actualSize = input.withUnsafeBytes { srcBuf in
+            output.withUnsafeMutableBytes { dstBuf in
+                compression_decode_buffer(
+                    dstBuf.baseAddress!.assumingMemoryBound(to: UInt8.self), decompressedSize,
+                    srcBuf.baseAddress!.assumingMemoryBound(to: UInt8.self), input.count,
+                    nil, COMPRESSION_LZ4
+                )
+            }
+        }
+        guard actualSize == decompressedSize else { return nil }
+        return output
     }
 }

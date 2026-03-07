@@ -1,4 +1,5 @@
 import Foundation
+import Compression
 import simd
 
 /// Decodes binary `Data` back into `VoxelStreamFrame`.
@@ -48,8 +49,21 @@ public enum VoxelStreamDecoder {
         let worldPointCount: UInt32 = readLE(data, &offset)
         let worldPtsSize: UInt32 = readLE(data, &offset)
 
+        // Detections header (v2 — 6 extra bytes after world points header)
+        // Backward-compatible: if data is only 140 bytes header, detections = 0
+        var detectionCount: UInt8 = 0
+        var detSize: UInt32 = 0
+        var flags: UInt8 = 0
+        if offset + 6 <= data.startIndex + VoxelStreamEncoder.headerSize {
+            detectionCount = data[offset]
+            offset += 1
+            detSize = readLE(data, &offset)
+            flags = data[offset]
+            offset += 1
+        }
+
         // Validate payload size
-        let expectedSize = VoxelStreamEncoder.headerSize + Int(jpegSize) + Int(depthSize) + Int(worldPtsSize)
+        let expectedSize = VoxelStreamEncoder.headerSize + Int(jpegSize) + Int(depthSize) + Int(worldPtsSize) + Int(detSize)
         guard data.count >= expectedSize else { return nil }
 
         let jpegStart = offset
@@ -60,7 +74,14 @@ public enum VoxelStreamDecoder {
         if depthSize > 0 {
             let depthStart = jpegEnd
             let depthEnd = depthStart + Int(depthSize)
-            depthFloat16 = data[depthStart..<depthEnd]
+            let rawDepth = Data(data[depthStart..<depthEnd])
+            if flags & 0x02 != 0 {
+                // LZ4 compressed depth — decompress
+                let expectedSize = Int(depthWidth) * Int(depthHeight) * 2 // Float16
+                depthFloat16 = VoxelStreamEncoder.lz4Decompress(rawDepth, decompressedSize: expectedSize)
+            } else {
+                depthFloat16 = rawDepth
+            }
         }
 
         var worldPoints: Data? = nil
@@ -68,6 +89,13 @@ public enum VoxelStreamDecoder {
             let wpStart = jpegEnd + Int(depthSize)
             let wpEnd = wpStart + Int(worldPtsSize)
             worldPoints = data[wpStart..<wpEnd]
+        }
+
+        var detections: Data? = nil
+        if detSize > 0 {
+            let detStart = jpegEnd + Int(depthSize) + Int(worldPtsSize)
+            let detEnd = detStart + Int(detSize)
+            detections = data[detStart..<detEnd]
         }
 
         return VoxelStreamFrame(
@@ -82,7 +110,10 @@ public enum VoxelStreamDecoder {
             depthWidth: depthWidth,
             depthHeight: depthHeight,
             worldPoints: worldPoints.map { Data($0) },
-            worldPointCount: worldPointCount
+            worldPointCount: worldPointCount,
+            detections: detections.map { Data($0) },
+            detectionCount: detectionCount,
+            flags: flags
         )
     }
 
@@ -96,6 +127,65 @@ public enum VoxelStreamDecoder {
         let payload = data[data.startIndex + 4 ..< data.startIndex + totalLength]
         guard let frame = decode(Data(payload)) else { return nil }
         return (frame, totalLength)
+    }
+
+    // MARK: - DeviceStatusMessage
+
+    public static func decodeStatus(_ data: Data) -> DeviceStatusMessage? {
+        guard data.count >= DeviceStatusMessage.messageSize else { return nil }
+        let s = data.startIndex
+        guard data[s] == 0x56, data[s+1] == 0x58,
+              data[s+2] == 0x53, data[s+3] == 0x54 else { return nil }
+        return DeviceStatusMessage(
+            cameraActive: data[s + 4] != 0,
+            gyroActive: data[s + 5] != 0,
+            selectedCamera: data[s + 6],
+            batteryLevel: data[s + 7],
+            thermalState: data[s + 8],
+            trackingState: data[s + 9]
+        )
+    }
+
+    // MARK: - Unified Message Dispatch
+
+    /// Multiplexed message type for the VoxelStream TCP channel.
+    public enum VoxelMessage {
+        case frame(VoxelStreamFrame)
+        case status(DeviceStatusMessage)
+    }
+
+    /// Decode any length-prefixed message by inspecting the magic bytes.
+    /// Returns (message, bytesConsumed) or nil if data is incomplete.
+    public static func decodeAnyLengthPrefixed(_ data: Data) -> (VoxelMessage, Int)? {
+        guard data.count >= 8 else { return nil } // 4 length + 4 magic minimum
+        var offset = data.startIndex
+        let payloadLength: UInt32 = readLE(data, &offset)
+        let totalLength = 4 + Int(payloadLength)
+        guard data.count >= totalLength else { return nil }
+
+        let payload = data[data.startIndex + 4 ..< data.startIndex + totalLength]
+        let ms = payload.startIndex
+
+        // VXSF — frame
+        if payload[ms] == 0x56 && payload[ms+1] == 0x58 &&
+           payload[ms+2] == 0x53 && payload[ms+3] == 0x46 {
+            if let frame = decode(Data(payload)) {
+                return (.frame(frame), totalLength)
+            }
+            return nil
+        }
+
+        // VXST — status
+        if payload[ms] == 0x56 && payload[ms+1] == 0x58 &&
+           payload[ms+2] == 0x53 && payload[ms+3] == 0x54 {
+            if let status = decodeStatus(Data(payload)) {
+                return (.status(status), totalLength)
+            }
+            return nil
+        }
+
+        // Unknown magic — skip this message
+        return nil
     }
 
     // MARK: - Helpers

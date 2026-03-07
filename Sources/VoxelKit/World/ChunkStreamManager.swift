@@ -17,6 +17,9 @@ public final class ChunkStreamManager: @unchecked Sendable {
     /// LRU access order (most recently accessed at end).
     private var accessOrder: [ChunkKey] = []
 
+    /// Fast membership check for accessOrder (avoids O(n) firstIndex calls).
+    private var accessSet: Set<ChunkKey> = []
+
     /// Set of chunk keys known to be on disk.
     private var onDiskKeys: Set<ChunkKey> = []
 
@@ -36,8 +39,12 @@ public final class ChunkStreamManager: @unchecked Sendable {
 
     /// Mark a chunk as recently accessed (move to end of LRU).
     public func touch(_ key: ChunkKey) {
-        if let idx = accessOrder.firstIndex(of: key) {
-            accessOrder.remove(at: idx)
+        if accessSet.contains(key) {
+            if let idx = accessOrder.firstIndex(of: key) {
+                accessOrder.remove(at: idx)
+            }
+        } else {
+            accessSet.insert(key)
         }
         accessOrder.append(key)
     }
@@ -93,6 +100,7 @@ public final class ChunkStreamManager: @unchecked Sendable {
 
         while accessOrder.count > maxInMemoryChunks, let oldest = accessOrder.first {
             accessOrder.removeFirst()
+            accessSet.remove(oldest)
             if let chunk = allChunks[oldest] {
                 saveToDisk(chunk)
                 store.removeChunk(oldest)

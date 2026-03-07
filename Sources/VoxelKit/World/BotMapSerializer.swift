@@ -22,15 +22,24 @@ public enum BotMapSerializer {
     // MARK: - Save
 
     public static func save(world: BotMapWorld, to url: URL) async throws {
-        // Collect data on actor
-        let packedVoxels = await world.store.collectPackedVoxels()
+        // nonisolated let properties — no await needed
+        let store = world.store
+        let createdAt = world.createdAt
+        // Actor-isolated var properties
         let name = await world.name
-        let createdAt = await world.createdAt
         let pipelineMode = await world.pipelineMode
-        let count = packedVoxels.count
 
-        // Collect observation data from octree nodes
-        let nodeData = collectNodeData(from: world.store)
+        // Single-pass collection: packed voxels + observation data in lockstep
+        var packedVoxels = [PackedVoxel]()
+        var obsData = [(UInt16, Float)]()
+        for (_, chunk) in store.allChunks {
+            collectVoxelsWithNodeData(node: chunk.tree.root,
+                                       origin: chunk.tree.origin,
+                                       size: chunk.tree.rootSize,
+                                       packedVoxels: &packedVoxels,
+                                       obsData: &obsData)
+        }
+        let count = packedVoxels.count
 
         // Build JSON header
         let meta = BotMapMeta(
@@ -49,8 +58,8 @@ public enum BotMapSerializer {
             withUnsafeBytes(of: pv.y) { rawVoxels.append(contentsOf: $0) }
             withUnsafeBytes(of: pv.z) { rawVoxels.append(contentsOf: $0) }
             withUnsafeBytes(of: pv.colorAndFlags) { rawVoxels.append(contentsOf: $0) }
-            let obsCount = i < nodeData.count ? nodeData[i].observationCount : UInt16(1)
-            let signedDist = i < nodeData.count ? nodeData[i].signedDistance : Float.greatestFiniteMagnitude
+            let obsCount = obsData[i].0
+            let signedDist = obsData[i].1
             withUnsafeBytes(of: obsCount) { rawVoxels.append(contentsOf: $0) }
             withUnsafeBytes(of: signedDist) { rawVoxels.append(contentsOf: $0) }
         }
@@ -73,28 +82,31 @@ public enum BotMapSerializer {
         try output.write(to: url)
     }
 
-    /// Collect observation data parallel to PackedVoxels for serialization.
-    private static func collectNodeData(from store: ChunkedOctreeStore) -> [(observationCount: UInt16, signedDistance: Float)] {
-        var result: [(observationCount: UInt16, signedDistance: Float)] = []
-        for (_, chunk) in store.allChunks {
-            collectNodeDataRecursive(node: chunk.tree.root, result: &result)
-        }
-        return result
-    }
-
-    private static func collectNodeDataRecursive(node: OctreeNode,
-                                                  result: inout [(observationCount: UInt16, signedDistance: Float)]) {
+    /// Single-pass recursive collection of PackedVoxels + observation data in lockstep.
+    /// Guarantees 1:1 correspondence between packed voxels and observation data.
+    private static func collectVoxelsWithNodeData(
+        node: OctreeNode, origin: SIMD3<Float>, size: Float,
+        packedVoxels: inout [PackedVoxel], obsData: inout [(UInt16, Float)]
+    ) {
         if node.isLeaf {
-            if node.isOccupied {
-                result.append((node.observationCount, node.signedDistance))
+            if node.logOdds >= 0.0 {
+                let center = origin + SIMD3<Float>(repeating: size * 0.5)
+                packedVoxels.append(PackedVoxel(position: center, color: node.color, layer: node.layer))
+                obsData.append((node.observationCount, node.signedDistance))
             }
             return
         }
         guard let children = node.children else { return }
+        let halfSize = size * 0.5
         for i in 0..<8 {
-            if let child = children[i] {
-                collectNodeDataRecursive(node: child, result: &result)
-            }
+            guard let child = children[i] else { continue }
+            let childOrigin = origin + SIMD3<Float>(
+                (i & 1) != 0 ? halfSize : 0,
+                (i & 2) != 0 ? halfSize : 0,
+                (i & 4) != 0 ? halfSize : 0
+            )
+            collectVoxelsWithNodeData(node: child, origin: childOrigin, size: halfSize,
+                                       packedVoxels: &packedVoxels, obsData: &obsData)
         }
     }
 

@@ -13,6 +13,7 @@ public final class VoxelSceneController: ObservableObject {
     public init() {}
 
     public func snapshot() -> NSImage? { scnView?.snapshot() }
+    public var scene: SCNScene? { scnView?.scene }
 
     @discardableResult
     public func saveSnapshotToDesktop(prefix: String = "VoxelUI") -> URL? {

@@ -56,13 +56,28 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
     private var mergedCacheDepth: [ChunkKey: Int] = [:]
 
     // LOD bands (maxDistFromCamera → octreeDepth)
+    // Tuned for Go2 Air sensor (128×128×40 voxels/frame, ~5m effective range):
+    //   0-10m: full detail (3.125cm leaves) — immediate surroundings
+    //  10-30m: medium detail (6.25cm) — near environment
+    //  30-80m: coarse detail (12.5cm) — mid-range
+    //  80m+:   minimal (50cm) — distant, handled mostly by SuperChunks
     private static let lodBands: [(maxDist: Float, depth: Int)] = [
-        (20,  5),
-        (100, 3),
-        (.greatestFiniteMagnitude, 1)
+        (10,  5),   // 3.125cm — full resolution
+        (30,  4),   // 6.25cm — half resolution
+        (80,  3),   // 12.5cm — quarter resolution
+        (.greatestFiniteMagnitude, 1)  // 50cm — coarse
     ]
 
     private let sessionStart = Date.now
+
+    /// Rendering quality filters.
+    /// Minimum log-odds for a voxel to be rendered (default 0 = any occupied).
+    /// Set higher (e.g. 0.4) to filter low-confidence voxels.
+    public var renderMinLogOdds: Float = 0.4
+
+    /// Minimum observation count for a voxel to be rendered (default 0 = no filter).
+    /// Set to 2+ to filter single-observation noise from ARKit feature points.
+    public var renderMinObservationCount: UInt16 = 2
 
     /// Optional chunk streaming manager for large-scale worlds.
     public var streamManager: ChunkStreamManager?
@@ -87,14 +102,69 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
 
     /// Insert a batch of colored voxels (camera-sampled RGB).
     public func insertColoredPositions(_ voxels: [ColoredPosition], robotIndex: Int = 0) {
+        insertColoredPositions(voxels, cameraPos: nil, robotIndex: robotIndex)
+    }
+
+    /// Insert colored world points with optional ray casting from camera position.
+    ///
+    /// When `cameraPos` is provided, uses the subtractive pipeline:
+    /// - Hit points inserted via LOD-aware `updateSubtractive`
+    /// - Free-space carved along rays from camera to each point
+    /// When nil, falls back to simple additive insertion.
+    public func insertColoredPositions(_ voxels: [ColoredPosition], cameraPos: SIMD3<Float>?,
+                                       robotIndex: Int = 0) {
         let timestamp = UInt32(Date.now.timeIntervalSince(sessionStart))
-        for v in voxels {
-            let key = chunkKeyFor(v.position)
-            let chunk = getOrCreateChunk(key)
-            chunk.tree.updateOccupancy(at: v.position, hit: true, robotIndex: robotIndex,
-                                       timestamp: timestamp, color: v.color)
-            chunk.isDirty = true
-            chunk.version &+= 1
+        var touchedKeys = Set<ChunkKey>()
+
+        if let cameraPos {
+            // Subtractive path: LOD-aware hits + free-space ray carving
+            let resolution: Float = 0.05
+            for v in voxels {
+                let key = chunkKeyFor(v.position)
+                let chunk = getOrCreateChunk(key)
+                let (depth, _) = lodParams(for: key.worldOrigin, cameraPos: cameraPos)
+                chunk.tree.updateSubtractive(at: v.position, hit: true, targetDepth: depth,
+                                              robotIndex: robotIndex, timestamp: timestamp,
+                                              color: v.color)
+                chunk.isDirty = true
+                chunk.version &+= 1
+                touchedKeys.insert(key)
+
+                // Free-space ray carving from camera to hit point (every 5cm cell)
+                let delta = v.position - cameraPos
+                let dist = simd_length(delta)
+                let dir = delta / dist
+                // Carve from 30cm out to 1 cell before hit, stepping every cell
+                let startDist = max(resolution, 0.3)
+                let endDist = dist - resolution
+                guard endDist > startDist else { continue }
+                let stepCount = min(Int((endDist - startDist) / resolution), 50)
+                for s in 0..<stepCount {
+                    let d = startDist + Float(s) * resolution
+                    let freePos = cameraPos + dir * d
+                    let fKey = chunkKeyFor(freePos)
+                    let fChunk = getOrCreateChunk(fKey)
+                    let (fDepth, _) = lodParams(for: fKey.worldOrigin, cameraPos: cameraPos)
+                    fChunk.tree.updateSubtractive(at: freePos, hit: false, targetDepth: fDepth,
+                                                   robotIndex: robotIndex, timestamp: timestamp)
+                    fChunk.isDirty = true
+                    touchedKeys.insert(fKey)
+                }
+            }
+        } else {
+            // Additive fallback (no camera pose)
+            for v in voxels {
+                let key = chunkKeyFor(v.position)
+                let chunk = getOrCreateChunk(key)
+                chunk.tree.updateOccupancy(at: v.position, hit: true, robotIndex: robotIndex,
+                                           timestamp: timestamp, color: v.color)
+                chunk.isDirty = true
+                chunk.version &+= 1
+                touchedKeys.insert(key)
+            }
+        }
+
+        for key in touchedKeys {
             dirtyChunks.insert(key)
             mergedCache.removeValue(forKey: key)
             mergedCacheDepth.removeValue(forKey: key)
@@ -167,7 +237,10 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
 
     /// Initialize a region as "unknown-solid" for the subtractive pipeline.
     /// Used by object detection: distant silhouette → large solid bounding box.
-    public func initializeSolidRegion(_ aabb: AABB, color: (UInt8, UInt8, UInt8) = (128, 128, 128)) {
+    public func initializeSolidRegion(_ aabb: AABB,
+                                      color: (UInt8, UInt8, UInt8) = (128, 128, 128),
+                                      classId: UInt8 = 0,
+                                      layer: MapLayer = .structure) {
         // Fill the AABB with chunks. Each chunk's root starts as unobserved (conservatively solid).
         let minKey = chunkKeyFor(aabb.min)
         let maxKey = chunkKeyFor(aabb.max)
@@ -176,8 +249,10 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
                 for x in minKey.x...maxKey.x {
                     let key = ChunkKey(x: x, y: y, z: z)
                     let chunk = getOrCreateChunk(key)
-                    // Set root color for unobserved rendering
+                    // Set root properties for unobserved rendering
                     chunk.tree.root.color = color
+                    chunk.tree.root.classId = classId
+                    chunk.tree.root.layer = layer
                     chunk.isDirty = true
                     dirtyChunks.insert(key)
                     mergedCache.removeValue(forKey: key)
@@ -233,21 +308,34 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
     }
 
     /// Sample up to `maxCount` colored voxels (position + stored RGB).
+    /// Uses coarse depth (2) per chunk for speed — avoids full tree traversal.
     public func sampleColoredPositions(maxCount: Int) -> [(SIMD3<Float>, (UInt8, UInt8, UInt8))] {
-        let all = collectPackedVoxels()
-        let selected: [PackedVoxel]
-        if all.count > maxCount {
-            let stride = max(1, all.count / maxCount)
-            selected = (0..<min(maxCount, all.count)).map { all[$0 * stride] }
-        } else {
-            selected = all
+        guard !chunks.isEmpty else { return [] }
+        let budgetPerChunk = max(1, maxCount / chunks.count)
+        var result = [(SIMD3<Float>, (UInt8, UInt8, UInt8))]()
+        result.reserveCapacity(maxCount)
+
+        for (_, chunk) in chunks {
+            // Collect at depth 2 (max 64 leaves) — much faster than full maxDepth
+            let voxels = chunk.tree.collectAtDepth(2)
+            let selected: ArraySlice<PackedVoxel>
+            if voxels.count > budgetPerChunk {
+                let stride = max(1, voxels.count / budgetPerChunk)
+                selected = voxels[...].enumerated().compactMap { (i, v) in
+                    i % stride == 0 ? v : nil
+                }.prefix(budgetPerChunk)[...]
+            } else {
+                selected = voxels[...]
+            }
+            for pv in selected {
+                let r = UInt8((pv.colorAndFlags >> 24) & 0xFF)
+                let g = UInt8((pv.colorAndFlags >> 16) & 0xFF)
+                let b = UInt8((pv.colorAndFlags >> 8)  & 0xFF)
+                result.append((SIMD3<Float>(pv.x, pv.y, pv.z), (r, g, b)))
+                if result.count >= maxCount { return result }
+            }
         }
-        return selected.map { pv in
-            let r = UInt8((pv.colorAndFlags >> 24) & 0xFF)
-            let g = UInt8((pv.colorAndFlags >> 16) & 0xFF)
-            let b = UInt8((pv.colorAndFlags >> 8)  & 0xFF)
-            return (SIMD3<Float>(pv.x, pv.y, pv.z), (r, g, b))
-        }
+        return result
     }
 
     /// Collect all occupied voxels as PackedVoxel (for GPU upload).
@@ -277,8 +365,12 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
                 result.append(contentsOf: cached)
             } else {
                 let raw = depth >= chunk.tree.maxDepth
-                    ? chunk.tree.collectOccupiedVoxels(includeUnobserved: subtractiveMode)
-                    : chunk.tree.collectAtDepth(depth, includeUnobserved: subtractiveMode)
+                    ? chunk.tree.collectOccupiedVoxels(minLogOdds: renderMinLogOdds,
+                                                        minObservationCount: renderMinObservationCount,
+                                                        includeUnobserved: subtractiveMode)
+                    : chunk.tree.collectAtDepth(depth, minLogOdds: renderMinLogOdds,
+                                                 minObservationCount: renderMinObservationCount,
+                                                 includeUnobserved: subtractiveMode)
                 let merged = GreedyMesher.merge(voxels: raw, voxelSize: voxelSize,
                                                 chunkOrigin: key.worldOrigin)
                 mergedCache[key] = merged
@@ -313,7 +405,9 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
     }
 
     public func expireDynamic(ttlSeconds: UInt32 = 30) {
-        let threshold = UInt32(Date.now.timeIntervalSince(sessionStart)) - ttlSeconds
+        let elapsed = Date.now.timeIntervalSince(sessionStart)
+        guard elapsed > Double(ttlSeconds) else { return }
+        let threshold = UInt32(elapsed) - ttlSeconds
         for (_, chunk) in chunks { chunk.tree.expireDynamicLayer(olderThan: threshold) }
     }
 
@@ -372,8 +466,10 @@ public final class ChunkedOctreeStore: @unchecked Sendable {
         }
     }
 
-    private func chunkKeyFor(_ pos: SIMD3<Float>) -> ChunkKey {
-        ChunkKey(x: Int16(floor(pos.x)), y: Int16(floor(pos.y)), z: Int16(floor(pos.z)))
+    public func chunkKeyFor(_ pos: SIMD3<Float>) -> ChunkKey {
+        ChunkKey(x: Int16(clamping: Int32(floor(pos.x))),
+                 y: Int16(clamping: Int32(floor(pos.y))),
+                 z: Int16(clamping: Int32(floor(pos.z))))
     }
 
     private func getOrCreateChunk(_ key: ChunkKey) -> OctreeChunk {

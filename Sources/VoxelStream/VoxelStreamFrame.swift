@@ -30,6 +30,24 @@ public struct VoxelStreamFrame: Sendable {
     /// Number of world-space 3D points.
     public let worldPointCount: UInt32
 
+    /// Detected objects from on-device neural pipeline.
+    /// Packed as [UInt8 classId, Float32 confidence, Float32×3 aabb_min, Float32×3 aabb_max] per detection.
+    /// Each detection = 29 bytes (1 + 4 + 12 + 12).
+    public let detections: Data?
+    /// Number of detected objects (0 = no detections).
+    public let detectionCount: UInt8
+
+    /// Bytes per packed detection: classId(1) + confidence(4) + min(12) + max(12) = 29
+    public static let bytesPerDetection = 29
+
+    /// Bytes per colored world point: Float32×3 position (12) + UInt8×3 RGB (3) + pad (1) = 16
+    public static let bytesPerColoredPoint = 16
+    /// Bytes per raw world point: Float32×3 position = 12 (SIMD3<Float> stride = 16)
+    public static let bytesPerRawPoint = 16 // MemoryLayout<SIMD3<Float>>.stride
+
+    /// Header flags byte (offset 145). Bit 0 = world points include inline RGB colors (16B per point).
+    public let flags: UInt8
+
     public init(
         sequence: UInt32,
         timestamp: Double,
@@ -42,7 +60,10 @@ public struct VoxelStreamFrame: Sendable {
         depthWidth: UInt16 = 0,
         depthHeight: UInt16 = 0,
         worldPoints: Data? = nil,
-        worldPointCount: UInt32 = 0
+        worldPointCount: UInt32 = 0,
+        detections: Data? = nil,
+        detectionCount: UInt8 = 0,
+        flags: UInt8 = 0
     ) {
         self.sequence = sequence
         self.timestamp = timestamp
@@ -56,5 +77,11 @@ public struct VoxelStreamFrame: Sendable {
         self.depthHeight = depthHeight
         self.worldPoints = worldPoints
         self.worldPointCount = worldPointCount
+        self.detections = detections
+        self.detectionCount = detectionCount
+        self.flags = flags
     }
+
+    /// Whether world points include inline RGB colors (16B per point: xyz + rgb + pad).
+    public var hasColoredWorldPoints: Bool { flags & 0x01 != 0 }
 }

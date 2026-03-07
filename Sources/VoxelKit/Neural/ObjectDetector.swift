@@ -15,6 +15,10 @@ public struct DetectedObject: Sendable {
     public var worldAABB: AABB?
     /// Estimated distance from camera.
     public var estimatedDistance: Float?
+    /// Object class identifier (0-63), from ObjectPrior catalog. 0 = unknown.
+    public var classId: UInt8 = 0
+    /// Map layer for this object (structure/furniture/dynamic).
+    public var layer: MapLayer = .structure
 }
 
 /// Object detection for creating initial solid volumes in the subtractive pipeline.
@@ -139,15 +143,30 @@ public final class ObjectDetector: @unchecked Sendable {
             let worldCenter = cameraPos + rotation * camCenter
 
             // Estimate world-space size from pixel bbox + depth
-            let halfW = (Float(bboxW) * 0.5 / fx) * medianDepth
-            let halfH = (Float(bboxH) * 0.5 / fy) * medianDepth
-            let halfD = min(halfW, halfH) // assume roughly cubic depth
+            var sizeW = (Float(bboxW) / fx) * medianDepth
+            var sizeH = (Float(bboxH) / fy) * medianDepth
+            var sizeD = min(sizeW, sizeH) // assume roughly cubic depth
 
             var det = det
             det.estimatedDistance = medianDepth
+
+            // Apply object size priors — blend with known dimensions
+            if let prior = ObjectPrior.lookup(det.label) {
+                det.classId = prior.classId
+                det.layer = prior.layer
+                let depthSize = SIMD3<Float>(sizeW, sizeH, sizeD)
+                let blended = prior.blendSize(depthSize: depthSize, distance: medianDepth)
+                sizeW = blended.x
+                sizeH = blended.y
+                sizeD = blended.z
+            } else {
+                det.classId = ObjectPrior.classId(for: det.label)
+            }
+
+            let halfSize = SIMD3<Float>(sizeW, sizeH, sizeD) * 0.5
             det.worldAABB = AABB(
-                min: worldCenter - SIMD3<Float>(halfW, halfH, halfD),
-                max: worldCenter + SIMD3<Float>(halfW, halfH, halfD)
+                min: worldCenter - halfSize,
+                max: worldCenter + halfSize
             )
             return det
         }
@@ -187,10 +206,14 @@ public final class ObjectDetector: @unchecked Sendable {
                 let w = coordPtr[i * 4 + 2]
                 let h = coordPtr[i * 4 + 3]
 
+                let label = "class_\(bestClass)"
+                let prior = ObjectPrior.lookup(label)
                 detections.append(DetectedObject(
-                    label: "class_\(bestClass)",
+                    label: label,
                     confidence: bestConf,
-                    bbox: (x: cx - w * 0.5, y: cy - h * 0.5, width: w, height: h)
+                    bbox: (x: cx - w * 0.5, y: cy - h * 0.5, width: w, height: h),
+                    classId: prior?.classId ?? 0,
+                    layer: prior?.layer ?? .structure
                 ))
             }
         }

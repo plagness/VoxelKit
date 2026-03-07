@@ -45,23 +45,31 @@ public enum OctreeRayCaster {
         let effectiveMax = hitDistance ?? maxDistance
         guard effectiveMax > 0 else { return result }
 
-        // Step size: use the finest resolution we'll encounter (3.125cm leaf at depth 5)
-        // but scale up for distant rays to avoid excessive steps
-        let distFromCamera = simd_length(origin + direction * (effectiveMax * 0.5) - cameraPos)
+        // Adaptive step size matched to LOD bands (same as ChunkedOctreeStore):
+        //   0-10m: 3.125cm (depth 5) — full detail carving
+        //  10-30m: 6.25cm (depth 4)  — half resolution
+        //  30-80m: 12.5cm (depth 3)  — quarter resolution
+        //  80m+:   50cm (depth 1)    — coarse only
+        let midpointDist = simd_length(origin + direction * (effectiveMax * 0.5) - cameraPos)
         let stepSize: Float
-        if distFromCamera < 20 {
+        if midpointDist < 10 {
             stepSize = 0.03125  // depth 5: 3.125cm
-        } else if distFromCamera < 100 {
+        } else if midpointDist < 30 {
+            stepSize = 0.0625   // depth 4: 6.25cm
+        } else if midpointDist < 80 {
             stepSize = 0.125    // depth 3: 12.5cm
         } else {
             stepSize = 0.5      // depth 1: 50cm
         }
 
-        // Carve free space along the ray (before hit)
-        let carveEnd = hitDistance.map { max(0, $0 - stepSize) } ?? maxDistance
+        // Carve free space along the ray (before hit).
+        // Stop 2 voxels before the surface to avoid punching holes through thin walls.
+        let stopMargin = stepSize * 2
+        let carveEnd = hitDistance.map { max(0, $0 - stopMargin) } ?? maxDistance
         let carveSteps = max(0, Int(carveEnd / stepSize))
-        // Limit steps to prevent excessive processing
-        let maxSteps = min(carveSteps, 256)
+        // Limit steps: 512 for close rays (fine detail), 128 for distant
+        let stepLimit = midpointDist < 10 ? 512 : 256
+        let maxSteps = min(carveSteps, stepLimit)
 
         if maxSteps > 0 {
             let strideCount = max(1, carveSteps / maxSteps)

@@ -40,6 +40,9 @@ public final class NeuralPipeline: @unchecked Sendable {
     /// Auto-switch threshold: if no new chunks for N frames, switch to refine.
     public var autoSwitchThreshold: Int = 300 // ~10 seconds at 30fps
 
+    /// Run object detection every N frames (1 = every frame, 10 = every 10th).
+    public var detectionFrequency: Int = 10
+
     public init(depthMode: DepthMode = .explore) {
         self.depthEstimator = DepthEstimator(mode: depthMode)
         self.objectDetector = ObjectDetector()
@@ -48,23 +51,30 @@ public final class NeuralPipeline: @unchecked Sendable {
 
     // MARK: - Model Loading
 
-    /// Load models from a directory containing .mlmodelc files.
-    /// Expected files: "DepthAnythingV2Small.mlmodelc", "DepthPro.mlmodelc", "YOLOv8n.mlmodelc"
+    /// Load models from a directory containing .mlmodelc or .mlpackage files.
+    /// Expected files: "DepthAnythingV2Small", "DepthPro", "YOLOv8n"
     public func loadModels(from directory: URL) throws {
-        let v2URL = directory.appendingPathComponent("DepthAnythingV2Small.mlmodelc")
-        if FileManager.default.fileExists(atPath: v2URL.path) {
-            try depthEstimator.loadV2Model(from: v2URL)
+        if let url = Self.findModel(named: "DepthAnythingV2Small", in: directory) {
+            try depthEstimator.loadV2Model(from: url)
         }
 
-        let proURL = directory.appendingPathComponent("DepthPro.mlmodelc")
-        if FileManager.default.fileExists(atPath: proURL.path) {
-            try depthEstimator.loadProModel(from: proURL)
+        if let url = Self.findModel(named: "DepthPro", in: directory) {
+            try depthEstimator.loadProModel(from: url)
         }
 
-        let yoloURL = directory.appendingPathComponent("YOLOv8n.mlmodelc")
-        if FileManager.default.fileExists(atPath: yoloURL.path) {
-            try objectDetector.loadModel(from: yoloURL)
+        if let url = Self.findModel(named: "YOLOv8n", in: directory) {
+            try objectDetector.loadModel(from: url)
         }
+    }
+
+    /// Find a CoreML model by name, checking .mlmodelc first, then .mlpackage.
+    private static func findModel(named name: String, in directory: URL) -> URL? {
+        let fm = FileManager.default
+        let compiled = directory.appendingPathComponent("\(name).mlmodelc")
+        if fm.fileExists(atPath: compiled.path) { return compiled }
+        let package = directory.appendingPathComponent("\(name).mlpackage")
+        if fm.fileExists(atPath: package.path) { return package }
+        return nil
     }
 
     // MARK: - Frame Processing
@@ -112,7 +122,7 @@ public final class NeuralPipeline: @unchecked Sendable {
         }
 
         // 3. Object detection (every N frames to save compute)
-        if objectDetector.isReady && framesProcessed % 10 == 0 {
+        if objectDetector.isReady && framesProcessed % max(1, detectionFrequency) == 0 {
             let detections = objectDetector.detect(in: pixelBuffer)
             let projected = objectDetector.project(
                 detections: detections,
@@ -123,12 +133,14 @@ public final class NeuralPipeline: @unchecked Sendable {
 
             for det in projected {
                 guard let aabb = det.worldAABB else { continue }
-                await world.initializeSolidRegion(aabb)
+                await world.initializeSolidRegion(aabb, classId: det.classId, layer: det.layer)
+                refinementQueue.enqueueRegion(aabb, priority: .newDetection, store: world.store)
                 solidRegionsCreated += 1
                 result.solidRegions += 1
             }
             objectsDetected += projected.count
             result.objectsDetected = projected.count
+            result.detectedObjects = projected
         }
 
         // 4. Auto-mode switching (hybrid only)
@@ -156,9 +168,97 @@ public final class NeuralPipeline: @unchecked Sendable {
     // MARK: - Refinement
 
     /// Scan the world for chunks needing refinement and enqueue them.
-    public func scanForRefinement(world: BotMapWorld) async {
-        let store = await world.store
-        refinementQueue.scanForRefinement(store: store)
+    public func scanForRefinement(world: BotMapWorld) {
+        refinementQueue.scanForRefinement(store: world.store)
+    }
+
+    /// Whether there are refinement tasks available.
+    public var hasRefinementWork: Bool { !refinementQueue.isEmpty }
+
+    /// Process the next refinement task: re-estimate depth for a chunk
+    /// using Depth Pro (if available) and update the world.
+    ///
+    /// Returns the chunk key that was refined, or nil if nothing to do.
+    public func processNextRefinement(
+        world: BotMapWorld,
+        lastPixelBuffer: CVPixelBuffer?,
+        intrinsics: simd_float3x3,
+        extrinsics: simd_float4x4
+    ) async -> ChunkKey? {
+        guard depthEstimator.isProReady else { return nil }
+        guard let task = refinementQueue.dequeue() else { return nil }
+        guard let pixelBuffer = lastPixelBuffer else { return nil }
+
+        // Use Depth Pro for high-quality metric depth
+        guard let estimate = depthEstimator.estimatePro(pixelBuffer) else { return nil }
+
+        // Back-project with larger stride (refinement = quality, not speed)
+        let cameraPos = SIMD3<Float>(extrinsics[3][0], extrinsics[3][1], extrinsics[3][2])
+        let rays = depthEstimator.backProject(
+            estimate,
+            intrinsics: intrinsics,
+            extrinsics: extrinsics,
+            pixelStride: 2  // finer stride for refinement
+        )
+
+        if !rays.isEmpty {
+            await world.carveRays(rays, origin: cameraPos, maxDistance: 50.0)
+        }
+
+        return task.chunkKey
+    }
+
+    // MARK: - Background Scheduling
+
+    /// Start a background refinement loop that processes chunks when idle.
+    ///
+    /// This task runs indefinitely until cancelled. It:
+    /// 1. Periodically scans for low-quality chunks
+    /// 2. Processes them through Depth Pro when available
+    /// 3. Sleeps when no work is available or when in explore mode
+    ///
+    /// - Parameters:
+    ///   - world: The world to refine.
+    ///   - interval: Seconds between scan/process cycles.
+    ///   - frameProvider: Closure that returns the latest camera frame data, or nil if unavailable.
+    /// - Returns: A Task that can be cancelled to stop the loop.
+    @discardableResult
+    public func startBackgroundRefinement(
+        world: BotMapWorld,
+        interval: TimeInterval = 5.0,
+        frameProvider: @escaping @Sendable () async -> (pixelBuffer: CVPixelBuffer, intrinsics: simd_float3x3, extrinsics: simd_float4x4)?
+    ) -> Task<Void, Never> {
+        Task.detached(priority: .utility) { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+
+                // Only refine in hybrid or refine mode
+                guard self.depthMode == .hybrid || self.depthMode == .refine else {
+                    try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                    continue
+                }
+
+                // Scan for new refinement targets periodically
+                if self.refinementQueue.isEmpty {
+                    self.scanForRefinement(world: world)
+                }
+
+                // Process next chunk if we have frame data
+                if self.hasRefinementWork, let frame = await frameProvider() {
+                    let _ = await self.processNextRefinement(
+                        world: world,
+                        lastPixelBuffer: frame.pixelBuffer,
+                        intrinsics: frame.intrinsics,
+                        extrinsics: frame.extrinsics
+                    )
+                    // Short pause between refinements to avoid starving the main pipeline
+                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+                } else {
+                    // No work or no frames — sleep longer
+                    try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                }
+            }
+        }
     }
 }
 
@@ -173,4 +273,5 @@ public struct NeuralFrameResult: Sendable {
     public var objectsDetected: Int = 0
     public var solidRegions: Int = 0
     public var refinedChunk: ChunkKey? = nil
+    public var detectedObjects: [DetectedObject] = []
 }

@@ -25,9 +25,15 @@ public actor NetworkCaptureSession: CaptureSession {
     ) async -> Void
 
     /// Callback for world-space 3D points with sampled camera colors.
-    /// Parameters: array of (worldPosition, RGB color).
+    /// Parameters: array of (worldPosition, RGB color), camera position for ray casting.
     public typealias WorldPointsCallback = @Sendable (
-        [(SIMD3<Float>, (UInt8, UInt8, UInt8))]
+        [(SIMD3<Float>, (UInt8, UInt8, UInt8))], SIMD3<Float>
+    ) async -> Void
+
+    /// Callback for on-device neural detections.
+    /// Parameters: packed detection data, detection count.
+    public typealias DetectionsCallback = @Sendable (
+        Data, Int
     ) async -> Void
 
     public enum ConnectionState: Sendable {
@@ -44,7 +50,9 @@ public actor NetworkCaptureSession: CaptureSession {
 
     public var onFrame: FrameCallback?
     public var onWorldPoints: WorldPointsCallback?
+    public var onDetections: DetectionsCallback?
     public var onConnectionStateChanged: (@Sendable (ConnectionState) -> Void)?
+    public var onStatusUpdate: (@Sendable (DeviceStatusMessage) async -> Void)?
 
     private var browser: NWBrowser?
     private var connection: NWConnection?
@@ -72,6 +80,14 @@ public actor NetworkCaptureSession: CaptureSession {
 
     public func setOnConnectionStateChanged(_ callback: @escaping @Sendable (ConnectionState) -> Void) {
         self.onConnectionStateChanged = callback
+    }
+
+    public func setOnDetections(_ callback: @escaping DetectionsCallback) {
+        self.onDetections = callback
+    }
+
+    public func setOnStatusUpdate(_ callback: @escaping @Sendable (DeviceStatusMessage) async -> Void) {
+        self.onStatusUpdate = callback
     }
 
     // MARK: - CaptureSession
@@ -165,9 +181,17 @@ public actor NetworkCaptureSession: CaptureSession {
 
             receiveBuffer.append(chunk)
 
-            // Process all complete frames in the buffer
-            while let (frame, consumed) = VoxelStreamDecoder.decodeLengthPrefixed(receiveBuffer) {
+            // Process all complete messages in the buffer
+            while let (message, consumed) = VoxelStreamDecoder.decodeAnyLengthPrefixed(receiveBuffer) {
                 receiveBuffer.removeFirst(consumed)
+
+                // Handle status messages separately
+                if case .status(let status) = message {
+                    if let cb = onStatusUpdate { await cb(status) }
+                    continue
+                }
+
+                guard case .frame(let frame) = message else { continue }
 
                 // Stop-marker: iPhone stopped recording
                 if frame.sequence == VoxelStreamFrame.stopMarkerSequence {
@@ -208,20 +232,37 @@ public actor NetworkCaptureSession: CaptureSession {
                    frame.worldPointCount > 0,
                    let wpData = frame.worldPoints {
                     if processedFrames <= 3 {
-                        logger.info("Frame \(self.processedFrames): \(frame.worldPointCount) world points, \(wpData.count) bytes")
+                        logger.info("Frame \(self.processedFrames): \(frame.worldPointCount) world points, \(wpData.count) bytes, colored=\(frame.hasColoredWorldPoints)")
                     }
-                    let coloredPts = projectWorldPointsToColor(
-                        wpData,
-                        count: Int(frame.worldPointCount),
-                        jpegData: frame.imageJPEG,
-                        imageWidth: Int(frame.imageWidth),
-                        imageHeight: Int(frame.imageHeight),
-                        pose: frame.pose,
-                        intrinsics: frame.intrinsics
-                    )
+
+                    let coloredPts: [(SIMD3<Float>, (UInt8, UInt8, UInt8))]
+                    if frame.hasColoredWorldPoints {
+                        // Inline colors — skip JPEG decode + re-projection
+                        coloredPts = unpackColoredWorldPoints(wpData, count: Int(frame.worldPointCount))
+                    } else {
+                        // Legacy: re-project from JPEG (fallback for old senders)
+                        coloredPts = projectWorldPointsToColor(
+                            wpData,
+                            count: Int(frame.worldPointCount),
+                            jpegData: frame.imageJPEG,
+                            imageWidth: Int(frame.imageWidth),
+                            imageHeight: Int(frame.imageHeight),
+                            pose: frame.pose,
+                            intrinsics: frame.intrinsics
+                        )
+                    }
                     if !coloredPts.isEmpty {
-                        await wpCb(coloredPts)
+                        let cameraPosCol = frame.pose.columns.3
+                        let cameraPos = SIMD3<Float>(cameraPosCol.x, cameraPosCol.y, cameraPosCol.z)
+                        await wpCb(coloredPts, cameraPos)
                     }
+                }
+
+                // Detection pipeline (on-device neural results)
+                if let detCb = onDetections,
+                   frame.detectionCount > 0,
+                   let detData = frame.detections {
+                    await detCb(detData, Int(frame.detectionCount))
                 }
 
                 // Emit progress ~4 Hz
@@ -251,6 +292,28 @@ public actor NetworkCaptureSession: CaptureSession {
 
         onConnectionStateChanged?(.disconnected)
         progressContinuation.finish()
+    }
+
+    /// Send a voxel preview message back to the connected iPhone.
+    public func sendPreview(_ voxels: [PreviewVoxel]) {
+        guard let conn = connection else { return }
+        let msg = PreviewMessage(voxels: voxels)
+        let data = PreviewMessageEncoder.encodeLengthPrefixed(msg)
+        conn.send(content: data, completion: .contentProcessed { _ in })
+    }
+
+    /// Send a command message to the connected iPhone.
+    public func sendCommand(_ command: CommandMessage) {
+        guard let conn = connection else { return }
+        let data = CommandMessageEncoder.encodeLengthPrefixed(command)
+        conn.send(content: data, completion: .contentProcessed { _ in })
+    }
+
+    /// Send a JPEG snapshot of the voxel world to the connected iPhone.
+    public func sendSnapshot(_ snapshot: SnapshotMessage) {
+        guard let conn = connection else { return }
+        let data = SnapshotMessageEncoder.encodeLengthPrefixed(snapshot)
+        conn.send(content: data, completion: .contentProcessed { _ in })
     }
 
     public func cancel() {
@@ -353,6 +416,29 @@ public actor NetworkCaptureSession: CaptureSession {
             logger.warning("projectWorldPointsToColor: \(count) input points, 0 projected — check pose/intrinsics")
         }
 
+        return result
+    }
+
+    /// Unpack colored world points (16B each: Float32×3 + UInt8×3 + pad).
+    private func unpackColoredWorldPoints(_ data: Data, count: Int) -> [(SIMD3<Float>, (UInt8, UInt8, UInt8))] {
+        let bytesPerPoint = 16
+        guard data.count >= count * bytesPerPoint else { return [] }
+
+        var result: [(SIMD3<Float>, (UInt8, UInt8, UInt8))] = []
+        result.reserveCapacity(count)
+
+        data.withUnsafeBytes { raw in
+            for i in 0..<count {
+                let base = i * bytesPerPoint
+                let x = raw.load(fromByteOffset: base, as: Float.self)
+                let y = raw.load(fromByteOffset: base + 4, as: Float.self)
+                let z = raw.load(fromByteOffset: base + 8, as: Float.self)
+                let r = raw[base + 12]
+                let g = raw[base + 13]
+                let b = raw[base + 14]
+                result.append((SIMD3(x, y, z), (r, g, b)))
+            }
+        }
         return result
     }
 

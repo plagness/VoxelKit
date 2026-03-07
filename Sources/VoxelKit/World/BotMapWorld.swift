@@ -18,8 +18,9 @@ public actor BotMapWorld {
 
     // MARK: - Public state
 
-    /// Underlying voxel store (access only from actor context).
-    public let store: ChunkedOctreeStore
+    /// Underlying voxel store. Nonisolated because ChunkedOctreeStore is Sendable
+    /// and callers may need direct access for serialization or chunk transfer.
+    public nonisolated let store: ChunkedOctreeStore
 
     /// Super-chunk manager for macro-LOD distant rendering (100-500m).
     public let superChunkManager = SuperChunkManager()
@@ -118,8 +119,20 @@ public actor BotMapWorld {
 
     /// Initialize a bounding box as "unknown-solid" for the subtractive pipeline.
     /// Used by object detection: distant silhouette → large solid block.
-    public func initializeSolidRegion(_ aabb: AABB, color: (UInt8, UInt8, UInt8) = (128, 128, 128)) {
-        store.initializeSolidRegion(aabb, color: color)
+    public func initializeSolidRegion(_ aabb: AABB,
+                                      color: (UInt8, UInt8, UInt8) = (128, 128, 128),
+                                      classId: UInt8 = 0,
+                                      layer: MapLayer = .structure) {
+        store.initializeSolidRegion(aabb, color: color, classId: classId, layer: layer)
+    }
+
+    /// Process detected objects: initialize solid regions and enqueue for priority refinement.
+    public func processDetections(_ detections: [DetectedObject], refinementQueue: RefinementQueue) {
+        for det in detections {
+            guard let aabb = det.worldAABB else { continue }
+            store.initializeSolidRegion(aabb, classId: det.classId, layer: det.layer)
+            refinementQueue.enqueueRegion(aabb, priority: .newDetection, store: store)
+        }
     }
 
     // MARK: - Maintenance

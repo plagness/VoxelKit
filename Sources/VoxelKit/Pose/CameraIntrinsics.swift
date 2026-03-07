@@ -20,10 +20,23 @@ public struct CameraIntrinsics: Sendable {
     /// Image height (pixels)
     public var height: Int
 
-    public init(fx: Float, fy: Float, cx: Float, cy: Float, width: Int, height: Int) {
+    // MARK: - Distortion (Brown-Conrady model)
+
+    /// Radial distortion coefficients.
+    public var k1: Float
+    public var k2: Float
+    public var k3: Float
+    /// Tangential distortion coefficients.
+    public var p1: Float
+    public var p2: Float
+
+    public init(fx: Float, fy: Float, cx: Float, cy: Float, width: Int, height: Int,
+                k1: Float = 0, k2: Float = 0, k3: Float = 0, p1: Float = 0, p2: Float = 0) {
         self.fx = fx; self.fy = fy
         self.cx = cx; self.cy = cy
         self.width = width; self.height = height
+        self.k1 = k1; self.k2 = k2; self.k3 = k3
+        self.p1 = p1; self.p2 = p2
     }
 
     // MARK: - Device defaults
@@ -44,6 +57,14 @@ public struct CameraIntrinsics: Sendable {
         fx: 1552, fy: 1552, cx: 960, cy: 540, width: 1920, height: 1080
     )
 
+    /// Unitree Go2 Air front camera (wide-angle ~120 FOV, 720p H.264 via WebRTC).
+    /// Distortion coefficients are approximate for a typical action-cam lens.
+    /// For best results, calibrate with a checkerboard pattern.
+    public static let go2Air = CameraIntrinsics(
+        fx: 460, fy: 460, cx: 640, cy: 360, width: 1280, height: 720,
+        k1: -0.25, k2: 0.06, k3: 0, p1: 0, p2: 0
+    )
+
     /// 3×3 intrinsic matrix for use with neural pipeline.
     public var matrix3x3: simd_float3x3 {
         simd_float3x3(
@@ -53,24 +74,70 @@ public struct CameraIntrinsics: Sendable {
         )
     }
 
+    // MARK: - Distortion Correction
+
+    /// Whether this camera has non-zero distortion coefficients.
+    public var hasDistortion: Bool {
+        k1 != 0 || k2 != 0 || k3 != 0 || p1 != 0 || p2 != 0
+    }
+
+    /// Remove lens distortion from a pixel coordinate using iterative Brown-Conrady model.
+    /// Returns undistorted pixel (u, v). Runs 5 Newton iterations.
+    public func undistort(u: Float, v: Float) -> (Float, Float) {
+        guard hasDistortion else { return (u, v) }
+
+        // Normalize to camera coordinates
+        let x0 = (u - cx) / fx
+        let y0 = (v - cy) / fy
+
+        // Iterative undistortion (inverse of distortion model)
+        var x = x0
+        var y = y0
+        for _ in 0..<5 {
+            let r2 = x * x + y * y
+            let r4 = r2 * r2
+            let r6 = r4 * r2
+            let radial = 1 + k1 * r2 + k2 * r4 + k3 * r6
+            let dx = 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
+            let dy = p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
+            x = (x0 - dx) / radial
+            y = (y0 - dy) / radial
+        }
+
+        return (x * fx + cx, y * fy + cy)
+    }
+
     // MARK: - Back-projection
 
     /// Convert a pixel (u, v) and depth `d` (metres) to camera-space 3D position.
+    /// Applies distortion correction if distortion coefficients are set.
     public func unproject(u: Float, v: Float, depth: Float) -> SIMD3<Float> {
-        SIMD3<Float>(
-            (u - cx) * depth / fx,
-            (v - cy) * depth / fy,
+        let (uu, uv) = undistort(u: u, v: v)
+        return SIMD3<Float>(
+            (uu - cx) * depth / fx,
+            (uv - cy) * depth / fy,
             depth
         )
     }
 
-    /// Scale intrinsics to a different image resolution.
+    /// Project a camera-space 3D point to pixel coordinates.
+    /// Does NOT apply distortion (returns ideal pinhole projection).
+    public func project(_ point: SIMD3<Float>) -> (u: Float, v: Float)? {
+        guard point.z > 0 else { return nil }
+        let u = fx * point.x / point.z + cx
+        let v = fy * point.y / point.z + cy
+        guard u >= 0, u < Float(width), v >= 0, v < Float(height) else { return nil }
+        return (u, v)
+    }
+
+    /// Scale intrinsics to a different image resolution. Preserves distortion coefficients.
     public func scaled(toWidth newWidth: Int, height newHeight: Int) -> CameraIntrinsics {
         let sx = Float(newWidth) / Float(width)
         let sy = Float(newHeight) / Float(height)
         return CameraIntrinsics(fx: fx * sx, fy: fy * sy,
                                 cx: cx * sx, cy: cy * sy,
-                                width: newWidth, height: newHeight)
+                                width: newWidth, height: newHeight,
+                                k1: k1, k2: k2, k3: k3, p1: p1, p2: p2)
     }
 }
 

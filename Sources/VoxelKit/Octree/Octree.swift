@@ -17,7 +17,7 @@ public final class Octree: @unchecked Sendable {
 
     // Log-odds constants (OctoMap defaults)
     public static let logOddsHit: Float  =  0.85
-    public static let logOddsMiss: Float = -0.4
+    public static let logOddsMiss: Float = -0.7
     public static let logOddsMin: Float  = -2.0
     public static let logOddsMax: Float  =  3.5
 
@@ -67,6 +67,7 @@ public final class Octree: @unchecked Sendable {
         node.layer = layer
         node.color = color
         node.lastObserved = timestamp
+        if hit { node.observationCount = node.observationCount < UInt16.max ? node.observationCount &+ 1 : .max }
         if robotIndex < 64 { node.observerMask |= (1 << robotIndex) }
 
         if !wasOccupied && node.isOccupied {
@@ -133,6 +134,7 @@ public final class Octree: @unchecked Sendable {
                 child.logOdds = node.logOdds
                 child.color = node.color
                 child.layer = node.layer
+                child.classId = node.classId
                 child.observationCount = node.observationCount
                 node.children![childIdx] = child
                 nodeCount += 1
@@ -171,23 +173,25 @@ public final class Octree: @unchecked Sendable {
     /// When `includeUnobserved` is true, unobserved nodes are treated as conservatively
     /// occupied (subtractive mode: unknown = solid).
     public func collectOccupiedVoxels(minLogOdds: Float = 0.0,
+                                       minObservationCount: UInt16 = 0,
                                        includeUnobserved: Bool = false) -> [PackedVoxel] {
         var result = [PackedVoxel]()
         result.reserveCapacity(max(occupiedLeafCount, 64))
         collectRecursive(node: root, origin: origin, size: rootSize,
-                         minLogOdds: minLogOdds, includeUnobserved: includeUnobserved,
-                         result: &result)
+                         minLogOdds: minLogOdds, minObsCount: minObservationCount,
+                         includeUnobserved: includeUnobserved, result: &result)
         return result
     }
 
     /// Collect voxels at a specific depth for LOD queries.
     public func collectAtDepth(_ targetDepth: Int, minLogOdds: Float = 0.0,
+                                minObservationCount: UInt16 = 0,
                                 includeUnobserved: Bool = false) -> [PackedVoxel] {
         var result = [PackedVoxel]()
         collectAtDepthRecursive(node: root, origin: origin, size: rootSize,
                                 currentDepth: 0, targetDepth: targetDepth,
-                                minLogOdds: minLogOdds, includeUnobserved: includeUnobserved,
-                                result: &result)
+                                minLogOdds: minLogOdds, minObsCount: minObservationCount,
+                                includeUnobserved: includeUnobserved, result: &result)
         return result
     }
 
@@ -245,14 +249,16 @@ public final class Octree: @unchecked Sendable {
     // MARK: - Private: Collection
 
     private func collectRecursive(node: OctreeNode, origin: SIMD3<Float>, size: Float,
-                                  minLogOdds: Float, includeUnobserved: Bool = false,
+                                  minLogOdds: Float, minObsCount: UInt16 = 0,
+                                  includeUnobserved: Bool = false,
                                   result: inout [PackedVoxel]) {
         if node.isLeaf {
-            let include = node.logOdds >= minLogOdds ||
+            let passesObs = minObsCount == 0 || node.observationCount >= minObsCount
+            let include = (node.logOdds >= minLogOdds && passesObs) ||
                           (includeUnobserved && node.isConservativelyOccupied)
             if include {
                 let center = origin + SIMD3<Float>(repeating: size * 0.5)
-                result.append(PackedVoxel(position: center, color: node.color, layer: node.layer))
+                result.append(PackedVoxel(position: center, color: node.color, layer: node.layer, classId: node.classId))
             }
             return
         }
@@ -261,21 +267,23 @@ public final class Octree: @unchecked Sendable {
         for i in 0..<8 {
             guard let child = children[i] else { continue }
             collectRecursive(node: child, origin: origin + childOffset(index: i, halfSize: halfSize),
-                             size: halfSize, minLogOdds: minLogOdds,
+                             size: halfSize, minLogOdds: minLogOdds, minObsCount: minObsCount,
                              includeUnobserved: includeUnobserved, result: &result)
         }
     }
 
     private func collectAtDepthRecursive(node: OctreeNode, origin: SIMD3<Float>, size: Float,
                                          currentDepth: Int, targetDepth: Int,
-                                         minLogOdds: Float, includeUnobserved: Bool = false,
+                                         minLogOdds: Float, minObsCount: UInt16 = 0,
+                                         includeUnobserved: Bool = false,
                                          result: inout [PackedVoxel]) {
         if currentDepth >= targetDepth || node.isLeaf {
-            let include = node.logOdds >= minLogOdds ||
+            let passesObs = minObsCount == 0 || node.observationCount >= minObsCount
+            let include = (node.logOdds >= minLogOdds && passesObs) ||
                           (includeUnobserved && node.isConservativelyOccupied)
             if include {
                 let center = origin + SIMD3<Float>(repeating: size * 0.5)
-                result.append(PackedVoxel(position: center, color: node.color, layer: node.layer))
+                result.append(PackedVoxel(position: center, color: node.color, layer: node.layer, classId: node.classId))
             }
             return
         }
@@ -285,8 +293,8 @@ public final class Octree: @unchecked Sendable {
             guard let child = children[i] else { continue }
             collectAtDepthRecursive(node: child, origin: origin + childOffset(index: i, halfSize: halfSize),
                                     size: halfSize, currentDepth: currentDepth + 1, targetDepth: targetDepth,
-                                    minLogOdds: minLogOdds, includeUnobserved: includeUnobserved,
-                                    result: &result)
+                                    minLogOdds: minLogOdds, minObsCount: minObsCount,
+                                    includeUnobserved: includeUnobserved, result: &result)
         }
     }
 

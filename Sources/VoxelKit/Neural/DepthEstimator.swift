@@ -26,6 +26,14 @@ public struct DepthEstimate: Sendable {
     /// Scale factor to convert relative depth to meters (for V2, calibrated).
     public let metersPerUnit: Float
 
+    public init(depthMap: [Float], width: Int, height: Int, isMetric: Bool, metersPerUnit: Float) {
+        self.depthMap = depthMap
+        self.width = width
+        self.height = height
+        self.isMetric = isMetric
+        self.metersPerUnit = metersPerUnit
+    }
+
     /// Get depth at pixel coordinates.
     public func depth(atX x: Int, y: Int) -> Float {
         guard x >= 0, x < width, y >= 0, y < height else { return .nan }

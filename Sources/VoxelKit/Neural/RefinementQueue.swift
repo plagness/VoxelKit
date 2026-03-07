@@ -1,17 +1,33 @@
 import Foundation
 import simd
 
+/// Priority level for refinement tasks.
+public enum RefinementPriority: Int, Sendable, Comparable {
+    /// Newly detected object — refine immediately.
+    case newDetection = 0
+    /// Low observation count — needs more sensor data.
+    case lowObservation = 1
+    /// Background periodic refinement.
+    case periodic = 2
+
+    public static func < (lhs: RefinementPriority, rhs: RefinementPriority) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
 /// A chunk needing refinement via high-quality depth estimation.
 public struct RefinementTask: Sendable {
     public let chunkKey: ChunkKey
     /// Average observation count — lower = needs more refinement.
     public let avgObservationCount: Float
-    /// Priority (lower = more urgent).
-    public var priority: Float { avgObservationCount }
+    /// Task priority — lower = more urgent.
+    public let priority: RefinementPriority
 
-    public init(chunkKey: ChunkKey, avgObservationCount: Float) {
+    public init(chunkKey: ChunkKey, avgObservationCount: Float,
+                priority: RefinementPriority = .lowObservation) {
         self.chunkKey = chunkKey
         self.avgObservationCount = avgObservationCount
+        self.priority = priority
     }
 }
 
@@ -46,14 +62,13 @@ public final class RefinementQueue: @unchecked Sendable {
         for (key, chunk) in store.allChunks {
             guard !queuedKeys.contains(key) else { continue }
 
-            // Estimate average observation quality
             let voxels = chunk.tree.collectOccupiedVoxels()
             guard !voxels.isEmpty else { continue }
 
-            // Use voxel count as rough proxy — sparse chunks need refinement
             let density = Float(voxels.count)
             if density < refinementThreshold {
-                enqueue(RefinementTask(chunkKey: key, avgObservationCount: density))
+                enqueue(RefinementTask(chunkKey: key, avgObservationCount: density,
+                                       priority: .lowObservation))
             }
         }
     }
@@ -65,8 +80,23 @@ public final class RefinementQueue: @unchecked Sendable {
 
         queue.append(task)
         queuedKeys.insert(task.chunkKey)
-        queue.sort { $0.priority < $1.priority }
+        sortQueue()
         totalEnqueued += 1
+    }
+
+    /// Enqueue all chunks covered by an AABB region.
+    public func enqueueRegion(_ aabb: AABB, priority: RefinementPriority, store: ChunkedOctreeStore) {
+        let minKey = store.chunkKeyFor(aabb.min)
+        let maxKey = store.chunkKeyFor(aabb.max)
+        for z in minKey.z...maxKey.z {
+            for y in minKey.y...maxKey.y {
+                for x in minKey.x...maxKey.x {
+                    let key = ChunkKey(x: x, y: y, z: z)
+                    enqueue(RefinementTask(chunkKey: key, avgObservationCount: 0,
+                                           priority: priority))
+                }
+            }
+        }
     }
 
     // MARK: - Dequeue
@@ -101,5 +131,14 @@ public final class RefinementQueue: @unchecked Sendable {
     public func clear() {
         queue.removeAll()
         queuedKeys.removeAll()
+    }
+
+    // MARK: - Private
+
+    private func sortQueue() {
+        queue.sort { a, b in
+            if a.priority != b.priority { return a.priority < b.priority }
+            return a.avgObservationCount < b.avgObservationCount
+        }
     }
 }
