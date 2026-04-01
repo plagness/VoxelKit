@@ -1,0 +1,13 @@
+category: gaming
+type: personal
+status: active
+title:
+  en: "VoxelKit"
+  ru: "VoxelKit"
+description:
+  en: "Swift voxel toolkit for Apple platforms"
+  ru: "Swift воксельный тулкит для Apple платформ"
+tags: [swift, voxel, metal, toolkit]
+focus:
+  - gamedev
+  - performance
